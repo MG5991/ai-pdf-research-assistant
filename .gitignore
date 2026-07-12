@@ -1,0 +1,30 @@
+# Secret environment files
+.env
+.streamlit/secrets.toml
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm
+.idea/
+
+# Testing and caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# User-uploaded documents and generated data
+*.pdf
+uploads/
+chroma_db/
