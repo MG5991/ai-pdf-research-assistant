@@ -56,7 +56,14 @@ Grounded answer with source pages
 - Llama 3.2
 
 ## Project Structure
+## Model Modes
 
+The application automatically supports two execution modes:
+
+- **Local mode:** Uses `llama3.2:3b` through Ollama running on the user's computer.
+- **Cloud mode:** Uses Ollama Cloud when `OLLAMA_API_KEY` is configured.
+
+The deployed Streamlit version uses Ollama Cloud.
 ```text
 ai-pdf-research-assistant/
 ├── app.py
