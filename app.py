@@ -1,18 +1,45 @@
+import os
 import re
 
 import streamlit as st
-from ollama import chat
+from ollama import Client
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-# Local Ollama model installed on this computer
+# -----------------------------
+# 1. Ollama configuration
+# -----------------------------
+
 LOCAL_MODEL = "llama3.2:3b"
+CLOUD_MODEL = "gpt-oss:120b"
+
+# If this variable exists, the app uses Ollama Cloud.
+# If it does not exist, the app uses local Ollama.
+ollama_api_key = os.getenv("OLLAMA_API_KEY", "").strip()
+
+if ollama_api_key:
+    MODEL_MODE = "Ollama Cloud"
+    ACTIVE_MODEL = CLOUD_MODEL
+
+    ollama_client = Client(
+        host="https://ollama.com",
+        headers={
+            "Authorization": f"Bearer {ollama_api_key}",
+        },
+    )
+else:
+    MODEL_MODE = "Local Ollama"
+    ACTIVE_MODEL = LOCAL_MODEL
+
+    ollama_client = Client(
+        host="http://localhost:11434",
+    )
 
 
 # -----------------------------
-# 1. Streamlit page setup
+# 2. Streamlit page setup
 # -----------------------------
 
 st.set_page_config(
@@ -21,20 +48,23 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI PDF Research Assistant — Local RAG")
+st.title("AI PDF Research Assistant — Hybrid RAG")
+
 st.write(
     "Upload a PDF and ask questions about it. "
-    "The app retrieves relevant sections and uses a local Ollama model to answer."
+    "The app retrieves relevant document sections before asking "
+    "the selected Ollama model to answer."
 )
 
 
 # -----------------------------
-# 2. Clean extracted text
+# 3. Clean extracted text
 # -----------------------------
 
 def clean_text(text: str) -> str:
     """
-    Remove repeated spaces, tabs, and line breaks from extracted PDF text.
+    Remove repeated spaces, tabs, and line breaks
+    from extracted PDF text.
     """
 
     cleaned_text = re.sub(r"\s+", " ", text)
@@ -42,7 +72,7 @@ def clean_text(text: str) -> str:
 
 
 # -----------------------------
-# 3. Read PDF page by page
+# 4. Read PDF page by page
 # -----------------------------
 
 def read_pdf_with_pages(uploaded_file) -> list[dict]:
@@ -57,7 +87,10 @@ def read_pdf_with_pages(uploaded_file) -> list[dict]:
     pdf_reader = PdfReader(uploaded_file)
     pages = []
 
-    for page_number, page in enumerate(pdf_reader.pages, start=1):
+    for page_number, page in enumerate(
+        pdf_reader.pages,
+        start=1,
+    ):
         page_text = page.extract_text()
 
         if page_text and page_text.strip():
@@ -72,7 +105,7 @@ def read_pdf_with_pages(uploaded_file) -> list[dict]:
 
 
 # -----------------------------
-# 4. Split pages into chunks
+# 5. Split pages into chunks
 # -----------------------------
 
 def split_pages_into_chunks(
@@ -81,18 +114,30 @@ def split_pages_into_chunks(
     overlap: int = 200,
 ) -> list[dict]:
     """
-    Split each PDF page into smaller overlapping text chunks.
+    Split each PDF page into smaller overlapping chunks.
 
     chunk_size:
         Approximate number of characters in each chunk.
 
     overlap:
-        Number of characters repeated between neighboring chunks.
+        Number of repeated characters between neighboring chunks.
         This reduces the chance of losing context at chunk boundaries.
     """
 
+    if chunk_size <= 0:
+        raise ValueError(
+            "Chunk size must be greater than zero."
+        )
+
+    if overlap < 0:
+        raise ValueError(
+            "Overlap cannot be negative."
+        )
+
     if overlap >= chunk_size:
-        raise ValueError("Overlap must be smaller than chunk size.")
+        raise ValueError(
+            "Overlap must be smaller than chunk size."
+        )
 
     chunks = []
 
@@ -121,21 +166,26 @@ def split_pages_into_chunks(
 
 
 # -----------------------------
-# 5. Build TF-IDF search index
+# 6. Build TF-IDF search index
 # -----------------------------
 
 def build_search_index(chunks: list[dict]):
     """
     Convert PDF chunks into TF-IDF vectors.
 
-    The vectorizer learns important words and phrases from the PDF.
-    The resulting vectors make the chunks searchable.
+    The vectorizer identifies important words and phrases.
+    The generated vectors make the chunks searchable.
     """
 
     if not chunks:
-        raise ValueError("Cannot build a search index because there are no chunks.")
+        raise ValueError(
+            "Cannot build a search index because there are no chunks."
+        )
 
-    chunk_texts = [chunk["text"] for chunk in chunks]
+    chunk_texts = [
+        chunk["text"]
+        for chunk in chunks
+    ]
 
     vectorizer = TfidfVectorizer(
         lowercase=True,
@@ -144,13 +194,15 @@ def build_search_index(chunks: list[dict]):
         stop_words="english",
     )
 
-    chunk_vectors = vectorizer.fit_transform(chunk_texts)
+    chunk_vectors = vectorizer.fit_transform(
+        chunk_texts
+    )
 
     return vectorizer, chunk_vectors
 
 
 # -----------------------------
-# 6. Retrieve relevant chunks
+# 7. Retrieve relevant chunks
 # -----------------------------
 
 def retrieve_relevant_chunks(
@@ -163,32 +215,46 @@ def retrieve_relevant_chunks(
     """
     Compare the user's question with every PDF chunk.
 
-    Return the chunks with the highest cosine-similarity scores.
+    Return the chunks with the highest
+    cosine-similarity scores.
     """
 
-    question_vector = vectorizer.transform([question])
+    if not question.strip():
+        return []
+
+    question_vector = vectorizer.transform(
+        [question]
+    )
 
     similarities = cosine_similarity(
         question_vector,
         chunk_vectors,
     ).flatten()
 
-    number_to_retrieve = min(top_k, len(chunks))
+    number_to_retrieve = min(
+        top_k,
+        len(chunks),
+    )
 
-    top_indices = similarities.argsort()[-number_to_retrieve:][::-1]
+    top_indices = similarities.argsort()[
+        -number_to_retrieve:
+    ][::-1]
 
     retrieved_chunks = []
 
     for index in top_indices:
         chunk = chunks[index].copy()
-        chunk["score"] = float(similarities[index])
+        chunk["score"] = float(
+            similarities[index]
+        )
+
         retrieved_chunks.append(chunk)
 
     return retrieved_chunks
 
 
 # -----------------------------
-# 7. Create prompt for local model
+# 8. Create grounded prompt
 # -----------------------------
 
 def create_prompt(
@@ -196,14 +262,16 @@ def create_prompt(
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Build a grounded prompt using only retrieved PDF chunks.
+    Build a grounded prompt using only
+    retrieved PDF chunks.
     """
 
     context_parts = []
 
     for chunk in retrieved_chunks:
         context_parts.append(
-            f"[Page {chunk['page']}]\n{chunk['text']}"
+            f"[Page {chunk['page']}]\n"
+            f"{chunk['text']}"
         )
 
     context = "\n\n".join(context_parts)
@@ -241,27 +309,32 @@ ANSWER:
 
 
 # -----------------------------
-# 8. Ask local Ollama model
+# 9. Ask selected Ollama model
 # -----------------------------
 
-def ask_local_model(
+def ask_ollama_model(
     question: str,
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Send the retrieved PDF context and question to Ollama.
+    Send the retrieved PDF context and question
+    to either local Ollama or Ollama Cloud.
     """
 
-    prompt = create_prompt(question, retrieved_chunks)
+    prompt = create_prompt(
+        question,
+        retrieved_chunks,
+    )
 
-    response = chat(
-        model=LOCAL_MODEL,
+    response = ollama_client.chat(
+        model=ACTIVE_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "You are a careful document-analysis assistant. "
-                    "Use only the PDF context supplied by the user."
+                    "You are a careful academic "
+                    "document-analysis assistant. "
+                    "Use only the supplied PDF context."
                 ),
             },
             {
@@ -269,20 +342,24 @@ def ask_local_model(
                 "content": prompt,
             },
         ],
-        options={
-            "temperature": 0.1,
-        },
     )
 
     return response.message.content
 
 
 # -----------------------------
-# 9. Sidebar settings
+# 10. Sidebar settings
 # -----------------------------
 
 st.sidebar.header("RAG Settings")
-st.sidebar.caption(f"Local model: {LOCAL_MODEL}")
+
+st.sidebar.caption(
+    f"Mode: {MODEL_MODE}"
+)
+
+st.sidebar.caption(
+    f"Model: {ACTIVE_MODEL}"
+)
 
 top_k = st.sidebar.slider(
     "Number of chunks to retrieve",
@@ -298,7 +375,7 @@ show_chunks = st.sidebar.checkbox(
 
 
 # -----------------------------
-# 10. PDF upload
+# 11. PDF upload
 # -----------------------------
 
 uploaded_pdf = st.file_uploader(
@@ -307,39 +384,63 @@ uploaded_pdf = st.file_uploader(
 )
 
 if uploaded_pdf is None:
-    st.warning("Upload a PDF to begin.")
+    st.warning(
+        "Upload a PDF to begin."
+    )
+
     st.stop()
 
-st.success(f"Uploaded: {uploaded_pdf.name}")
+st.success(
+    f"Uploaded: {uploaded_pdf.name}"
+)
 
 
 # -----------------------------
-# 11. Process PDF
+# 12. Process PDF
 # -----------------------------
 
 try:
     with st.spinner("Reading PDF..."):
-        pages = read_pdf_with_pages(uploaded_pdf)
+        pages = read_pdf_with_pages(
+            uploaded_pdf
+        )
 
     if not pages:
         st.error(
             "No readable text was found. "
-            "The PDF may contain scanned images instead of selectable text."
+            "The PDF may contain scanned images "
+            "instead of selectable text."
         )
+
         st.stop()
 
-    with st.spinner("Splitting PDF into chunks..."):
-        chunks = split_pages_into_chunks(pages)
+    with st.spinner(
+        "Splitting PDF into chunks..."
+    ):
+        chunks = split_pages_into_chunks(
+            pages
+        )
 
     if not chunks:
-        st.error("The app could not create searchable text chunks.")
+        st.error(
+            "The app could not create "
+            "searchable text chunks."
+        )
+
         st.stop()
 
-    with st.spinner("Building local search index..."):
-        vectorizer, chunk_vectors = build_search_index(chunks)
+    with st.spinner(
+        "Building search index..."
+    ):
+        vectorizer, chunk_vectors = (
+            build_search_index(chunks)
+        )
 
 except Exception as error:
-    st.error("The PDF could not be processed.")
+    st.error(
+        "The PDF could not be processed."
+    )
+
     st.code(str(error))
     st.stop()
 
@@ -351,7 +452,7 @@ st.info(
 
 
 # -----------------------------
-# 12. Quick actions
+# 13. Quick actions
 # -----------------------------
 
 st.subheader("Quick actions")
@@ -378,37 +479,41 @@ with col3:
 
 
 # -----------------------------
-# 13. Custom question
+# 14. Custom question
 # -----------------------------
 
 question = st.text_input(
     "Or ask your own question about the PDF:",
-    placeholder="For example: What methodology did the paper use?",
+    placeholder=(
+        "For example: "
+        "What methodology did the paper use?"
+    ),
 )
 
 
 # -----------------------------
-# 14. Decide final question
+# 15. Decide final question
 # -----------------------------
 
 final_question = None
 
 if summarize_button:
     final_question = (
-        "Summarize the main ideas, research approach, results, "
+        "Summarize the main ideas, "
+        "research approach, results, "
         "and conclusions of this PDF."
     )
 
 elif beginner_button:
     final_question = (
-        "Explain the main ideas of this PDF in simple, "
-        "beginner-friendly language."
+        "Explain the main ideas of this PDF "
+        "in simple, beginner-friendly language."
     )
 
 elif key_points_button:
     final_question = (
-        "Extract the most important key points, findings, "
-        "and conclusions from this PDF."
+        "Extract the most important key points, "
+        "findings, and conclusions from this PDF."
     )
 
 elif question.strip():
@@ -416,93 +521,142 @@ elif question.strip():
 
 
 # -----------------------------
-# 15. Retrieve context and answer
+# 16. Retrieve context and answer
 # -----------------------------
 
 if final_question:
-    with st.spinner("Searching relevant PDF chunks..."):
-        retrieved_chunks = retrieve_relevant_chunks(
-            question=final_question,
-            chunks=chunks,
-            vectorizer=vectorizer,
-            chunk_vectors=chunk_vectors,
-            top_k=top_k,
+    with st.spinner(
+        "Searching relevant PDF chunks..."
+    ):
+        retrieved_chunks = (
+            retrieve_relevant_chunks(
+                question=final_question,
+                chunks=chunks,
+                vectorizer=vectorizer,
+                chunk_vectors=chunk_vectors,
+                top_k=top_k,
+            )
         )
 
     if not retrieved_chunks:
-        st.error("No relevant PDF chunks were found.")
+        st.error(
+            "No relevant PDF chunks were found."
+        )
+
         st.stop()
 
     source_pages = sorted(
-        {chunk["page"] for chunk in retrieved_chunks}
+        {
+            chunk["page"]
+            for chunk in retrieved_chunks
+        }
     )
 
     source_pages_text = ", ".join(
-        str(page) for page in source_pages
+        str(page)
+        for page in source_pages
     )
 
     best_score = retrieved_chunks[0]["score"]
 
     st.caption(
-        f"Using {len(retrieved_chunks)} retrieved chunks "
-        f"from page(s): {source_pages_text}."
+        f"Using {len(retrieved_chunks)} "
+        f"retrieved chunks from page(s): "
+        f"{source_pages_text}."
     )
 
     if best_score < 0.05:
         st.warning(
             "Retrieval confidence is low. "
-            "The search did not find a strong textual match for this question."
+            "The search did not find a strong "
+            "textual match for this question."
         )
 
-    with st.expander("How RAG worked for this question"):
+    with st.expander(
+        "How RAG worked for this question"
+    ):
         st.markdown(
             """
 1. The app took your question.
 2. It compared the question with every PDF chunk using TF-IDF.
 3. It ranked the chunks using cosine similarity.
 4. It selected the most relevant chunks.
-5. It sent those chunks to the local Ollama model.
-6. The local model generated an answer using the retrieved context.
+5. It sent those chunks to the selected Ollama model.
+6. The model generated an answer using the retrieved context.
             """
         )
 
-        st.write(f"Retrieved source pages: {source_pages_text}")
-        st.write(f"Best similarity score: {best_score:.3f}")
-        st.write(f"Local language model: {LOCAL_MODEL}")
+        st.write(
+            f"Retrieved source pages: "
+            f"{source_pages_text}"
+        )
+
+        st.write(
+            f"Best similarity score: "
+            f"{best_score:.3f}"
+        )
+
+        st.write(
+            f"Model mode: {MODEL_MODE}"
+        )
+
+        st.write(
+            f"Language model: {ACTIVE_MODEL}"
+        )
 
     if show_chunks:
-        with st.expander("Show retrieved chunks"):
+        with st.expander(
+            "Show retrieved chunks"
+        ):
             for index, chunk in enumerate(
                 retrieved_chunks,
                 start=1,
             ):
                 st.markdown(
-                    f"**Chunk {index} — Page {chunk['page']} — "
-                    f"Similarity score: {chunk['score']:.3f}**"
+                    f"**Chunk {index} — "
+                    f"Page {chunk['page']} — "
+                    f"Similarity score: "
+                    f"{chunk['score']:.3f}**"
                 )
-                st.write(chunk["text"])
+
+                st.write(
+                    chunk["text"]
+                )
 
     with st.spinner(
-        f"Generating answer locally with {LOCAL_MODEL}..."
+        f"Generating answer with "
+        f"{ACTIVE_MODEL}..."
     ):
         try:
-            answer = ask_local_model(
+            answer = ask_ollama_model(
                 final_question,
                 retrieved_chunks,
             )
 
         except Exception as error:
             st.error(
-                "The app could not connect to the local Ollama model. "
-                "Make sure Ollama is running and the model is installed."
+                f"The app could not connect "
+                f"using {MODEL_MODE}. "
+                "Check the local Ollama service "
+                "or cloud API credentials."
             )
+
             st.code(str(error))
             st.stop()
 
     if not answer or not answer.strip():
-        st.error("The local model returned an empty answer.")
+        st.error(
+            "The selected model returned "
+            "an empty answer."
+        )
+
         st.stop()
 
     st.subheader("Answer")
+
     st.write(answer)
-    st.markdown(f"**Retrieved source pages:** {source_pages_text}")
+
+    st.markdown(
+        f"**Retrieved source pages:** "
+        f"{source_pages_text}"
+    )
