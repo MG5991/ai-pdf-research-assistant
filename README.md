@@ -1,5 +1,11 @@
 # AI PDF Research Assistant
 
+## Live Demo
+
+Try the deployed application:
+
+[Open AI PDF Research Assistant](https://mg5991-ai-pdf-assistant.streamlit.app/)
+
 A local AI-powered research assistant that allows users to upload a PDF, search its contents, and ask grounded questions about the document.
 
 The application uses a Retrieval-Augmented Generation workflow with TF-IDF retrieval and a local Llama model running through Ollama.
