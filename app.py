@@ -4,20 +4,24 @@ import re
 import streamlit as st
 from ollama import Client
 from pypdf import PdfReader
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
 
 # -----------------------------
-# 1. Ollama configuration
+# 1. Model configuration
 # -----------------------------
 
 LOCAL_MODEL = "llama3.2:3b"
 CLOUD_MODEL = "gpt-oss:120b"
 
-# If this variable exists, the app uses Ollama Cloud.
-# If it does not exist, the app uses local Ollama.
-ollama_api_key = os.getenv("OLLAMA_API_KEY", "").strip()
+EMBEDDING_MODEL_NAME = (
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
+
+ollama_api_key = os.getenv(
+    "OLLAMA_API_KEY",
+    "",
+).strip()
 
 if ollama_api_key:
     MODEL_MODE = "Ollama Cloud"
@@ -26,9 +30,12 @@ if ollama_api_key:
     ollama_client = Client(
         host="https://ollama.com",
         headers={
-            "Authorization": f"Bearer {ollama_api_key}",
+            "Authorization": (
+                f"Bearer {ollama_api_key}"
+            ),
         },
     )
+
 else:
     MODEL_MODE = "Local Ollama"
     ACTIVE_MODEL = LOCAL_MODEL
@@ -48,43 +55,72 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI PDF Research Assistant — Hybrid RAG")
+st.title(
+    "AI PDF Research Assistant — Semantic RAG"
+)
 
 st.write(
     "Upload a PDF and ask questions about it. "
-    "The app retrieves relevant document sections before asking "
-    "the selected Ollama model to answer."
+    "The app uses semantic embeddings to retrieve "
+    "relevant sections before generating an answer."
 )
 
 
 # -----------------------------
-# 3. Clean extracted text
+# 3. Load embedding model
+# -----------------------------
+
+@st.cache_resource(show_spinner=False)
+def load_embedding_model():
+    """
+    Load the SentenceTransformers embedding model.
+
+    Streamlit caches the model so it is not reloaded
+    every time the application reruns.
+    """
+
+    return SentenceTransformer(
+        EMBEDDING_MODEL_NAME
+    )
+
+
+# -----------------------------
+# 4. Clean extracted text
 # -----------------------------
 
 def clean_text(text: str) -> str:
     """
-    Remove repeated spaces, tabs, and line breaks
-    from extracted PDF text.
+    Remove repeated spaces, tabs, and line breaks.
     """
 
-    cleaned_text = re.sub(r"\s+", " ", text)
+    cleaned_text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
     return cleaned_text.strip()
 
 
 # -----------------------------
-# 4. Read PDF page by page
+# 5. Read PDF page by page
 # -----------------------------
 
-def read_pdf_with_pages(uploaded_file) -> list[dict]:
+def read_pdf_with_pages(
+    uploaded_file,
+) -> list[dict]:
     """
-    Read an uploaded PDF and return its readable pages.
+    Extract readable text from each PDF page.
 
-    Each page is stored as a dictionary containing:
-    - page: page number
-    - text: extracted and cleaned page text
+    Each page is stored with:
+    - page number
+    - extracted text
     """
 
-    pdf_reader = PdfReader(uploaded_file)
+    pdf_reader = PdfReader(
+        uploaded_file
+    )
+
     pages = []
 
     for page_number, page in enumerate(
@@ -105,7 +141,7 @@ def read_pdf_with_pages(uploaded_file) -> list[dict]:
 
 
 # -----------------------------
-# 5. Split pages into chunks
+# 6. Split pages into chunks
 # -----------------------------
 
 def split_pages_into_chunks(
@@ -114,14 +150,7 @@ def split_pages_into_chunks(
     overlap: int = 200,
 ) -> list[dict]:
     """
-    Split each PDF page into smaller overlapping chunks.
-
-    chunk_size:
-        Approximate number of characters in each chunk.
-
-    overlap:
-        Number of repeated characters between neighboring chunks.
-        This reduces the chance of losing context at chunk boundaries.
+    Split each page into overlapping text chunks.
     """
 
     if chunk_size <= 0:
@@ -140,17 +169,20 @@ def split_pages_into_chunks(
         )
 
     chunks = []
+    step = chunk_size - overlap
 
     for page in pages:
         page_number = page["page"]
         page_text = page["text"]
 
         start = 0
-        step = chunk_size - overlap
 
         while start < len(page_text):
             end = start + chunk_size
-            chunk_text = page_text[start:end].strip()
+
+            chunk_text = (
+                page_text[start:end].strip()
+            )
 
             if chunk_text:
                 chunks.append(
@@ -166,70 +198,69 @@ def split_pages_into_chunks(
 
 
 # -----------------------------
-# 6. Build TF-IDF search index
+# 7. Create semantic embeddings
 # -----------------------------
 
-def build_search_index(chunks: list[dict]):
+@st.cache_data(show_spinner=False)
+def create_chunk_embeddings(
+    chunk_texts: tuple[str, ...],
+):
     """
-    Convert PDF chunks into TF-IDF vectors.
+    Convert document chunks into semantic vectors.
 
-    The vectorizer identifies important words and phrases.
-    The generated vectors make the chunks searchable.
+    Streamlit caches the vectors using the tuple of
+    chunk texts as the cache key.
     """
 
-    if not chunks:
-        raise ValueError(
-            "Cannot build a search index because there are no chunks."
+    embedding_model = load_embedding_model()
+
+    embeddings = (
+        embedding_model.encode_document(
+            list(chunk_texts),
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
         )
-
-    chunk_texts = [
-        chunk["text"]
-        for chunk in chunks
-    ]
-
-    vectorizer = TfidfVectorizer(
-        lowercase=True,
-        max_features=8000,
-        ngram_range=(1, 2),
-        stop_words="english",
     )
 
-    chunk_vectors = vectorizer.fit_transform(
-        chunk_texts
-    )
-
-    return vectorizer, chunk_vectors
+    return embeddings
 
 
 # -----------------------------
-# 7. Retrieve relevant chunks
+# 8. Retrieve semantic matches
 # -----------------------------
 
 def retrieve_relevant_chunks(
     question: str,
     chunks: list[dict],
-    vectorizer,
-    chunk_vectors,
+    chunk_embeddings,
     top_k: int = 5,
 ) -> list[dict]:
     """
-    Compare the user's question with every PDF chunk.
+    Embed the question and compare it with every
+    document-chunk embedding.
 
-    Return the chunks with the highest
-    cosine-similarity scores.
+    Because the embeddings are normalized, their
+    dot product is equivalent to cosine similarity.
     """
 
     if not question.strip():
         return []
 
-    question_vector = vectorizer.transform(
-        [question]
+    embedding_model = load_embedding_model()
+
+    question_embedding = (
+        embedding_model.encode_query(
+            question,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
     )
 
-    similarities = cosine_similarity(
-        question_vector,
-        chunk_vectors,
-    ).flatten()
+    similarities = (
+        chunk_embeddings @ question_embedding
+    )
 
     number_to_retrieve = min(
         top_k,
@@ -244,6 +275,7 @@ def retrieve_relevant_chunks(
 
     for index in top_indices:
         chunk = chunks[index].copy()
+
         chunk["score"] = float(
             similarities[index]
         )
@@ -254,7 +286,7 @@ def retrieve_relevant_chunks(
 
 
 # -----------------------------
-# 8. Create grounded prompt
+# 9. Create grounded prompt
 # -----------------------------
 
 def create_prompt(
@@ -262,8 +294,7 @@ def create_prompt(
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Build a grounded prompt using only
-    retrieved PDF chunks.
+    Build a prompt using only retrieved PDF text.
     """
 
     context_parts = []
@@ -274,7 +305,9 @@ def create_prompt(
             f"{chunk['text']}"
         )
 
-    context = "\n\n".join(context_parts)
+    context = "\n\n".join(
+        context_parts
+    )
 
     prompt = f"""
 You are a precise academic research assistant.
@@ -283,16 +316,14 @@ Answer the user's question using only the PDF context below.
 
 Instructions:
 - Give the direct answer first.
-- Use clear, natural English.
-- Do not copy poorly written sentences from the PDF word for word.
-- Paraphrase the information accurately.
+- Use clear and natural English.
+- Paraphrase the source accurately.
 - Do not use outside knowledge.
 - Do not invent facts, methods, datasets, results, or conclusions.
-- Avoid unnecessary repetition and vague phrases such as
-  "it can be reasonably inferred."
-- Cite the relevant page number after each important claim,
+- Avoid unnecessary repetition.
+- Cite the relevant page number after important claims,
   using the format: (page 2).
-- If the context is insufficient, say:
+- If the retrieved context is insufficient, say:
   "I could not find enough information in the retrieved PDF sections."
 - Keep the answer concise unless the user requests detail.
 
@@ -309,7 +340,7 @@ ANSWER:
 
 
 # -----------------------------
-# 9. Ask selected Ollama model
+# 10. Ask Ollama
 # -----------------------------
 
 def ask_ollama_model(
@@ -317,8 +348,8 @@ def ask_ollama_model(
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Send the retrieved PDF context and question
-    to either local Ollama or Ollama Cloud.
+    Generate an answer through either local Ollama
+    or Ollama Cloud.
     """
 
     prompt = create_prompt(
@@ -348,17 +379,25 @@ def ask_ollama_model(
 
 
 # -----------------------------
-# 10. Sidebar settings
+# 11. Sidebar settings
 # -----------------------------
 
 st.sidebar.header("RAG Settings")
 
 st.sidebar.caption(
-    f"Mode: {MODEL_MODE}"
+    f"Generation mode: {MODEL_MODE}"
 )
 
 st.sidebar.caption(
-    f"Model: {ACTIVE_MODEL}"
+    f"Language model: {ACTIVE_MODEL}"
+)
+
+st.sidebar.caption(
+    "Retriever: Semantic embeddings"
+)
+
+st.sidebar.caption(
+    "Embedding model: all-MiniLM-L6-v2"
 )
 
 top_k = st.sidebar.slider(
@@ -375,7 +414,7 @@ show_chunks = st.sidebar.checkbox(
 
 
 # -----------------------------
-# 11. PDF upload
+# 12. PDF upload
 # -----------------------------
 
 uploaded_pdf = st.file_uploader(
@@ -396,7 +435,7 @@ st.success(
 
 
 # -----------------------------
-# 12. Process PDF
+# 13. Process and index PDF
 # -----------------------------
 
 try:
@@ -408,8 +447,7 @@ try:
     if not pages:
         st.error(
             "No readable text was found. "
-            "The PDF may contain scanned images "
-            "instead of selectable text."
+            "The PDF may contain scanned images."
         )
 
         st.stop()
@@ -429,11 +467,18 @@ try:
 
         st.stop()
 
+    chunk_texts = tuple(
+        chunk["text"]
+        for chunk in chunks
+    )
+
     with st.spinner(
-        "Building search index..."
+        "Creating semantic embeddings..."
     ):
-        vectorizer, chunk_vectors = (
-            build_search_index(chunks)
+        chunk_embeddings = (
+            create_chunk_embeddings(
+                chunk_texts
+            )
         )
 
 except Exception as error:
@@ -441,18 +486,22 @@ except Exception as error:
         "The PDF could not be processed."
     )
 
-    st.code(str(error))
+    st.code(
+        f"{type(error).__name__}: {error}"
+    )
+
     st.stop()
 
 
 st.info(
-    f"Extracted {len(pages)} readable pages "
-    f"and created {len(chunks)} searchable chunks."
+    f"Extracted {len(pages)} readable pages, "
+    f"created {len(chunks)} chunks, and generated "
+    f"{len(chunk_embeddings)} semantic embeddings."
 )
 
 
 # -----------------------------
-# 13. Quick actions
+# 14. Quick actions
 # -----------------------------
 
 st.subheader("Quick actions")
@@ -479,35 +528,35 @@ with col3:
 
 
 # -----------------------------
-# 14. Custom question
+# 15. Custom question
 # -----------------------------
 
 question = st.text_input(
     "Or ask your own question about the PDF:",
     placeholder=(
         "For example: "
-        "What methodology did the paper use?"
+        "What research gap does this paper address?"
     ),
 )
 
 
 # -----------------------------
-# 15. Decide final question
+# 16. Decide final question
 # -----------------------------
 
 final_question = None
 
 if summarize_button:
     final_question = (
-        "Summarize the main ideas, "
-        "research approach, results, "
-        "and conclusions of this PDF."
+        "Summarize the main ideas, research "
+        "approach, results, and conclusions "
+        "of this PDF."
     )
 
 elif beginner_button:
     final_question = (
         "Explain the main ideas of this PDF "
-        "in simple, beginner-friendly language."
+        "in simple beginner-friendly language."
     )
 
 elif key_points_button:
@@ -521,19 +570,18 @@ elif question.strip():
 
 
 # -----------------------------
-# 16. Retrieve context and answer
+# 17. Retrieve context and answer
 # -----------------------------
 
 if final_question:
     with st.spinner(
-        "Searching relevant PDF chunks..."
+        "Searching by semantic meaning..."
     ):
         retrieved_chunks = (
             retrieve_relevant_chunks(
                 question=final_question,
                 chunks=chunks,
-                vectorizer=vectorizer,
-                chunk_vectors=chunk_vectors,
+                chunk_embeddings=chunk_embeddings,
                 top_k=top_k,
             )
         )
@@ -561,28 +609,29 @@ if final_question:
 
     st.caption(
         f"Using {len(retrieved_chunks)} "
-        f"retrieved chunks from page(s): "
-        f"{source_pages_text}."
+        f"semantically retrieved chunks from "
+        f"page(s): {source_pages_text}."
     )
 
-    if best_score < 0.05:
+    if best_score < 0.15:
         st.warning(
-            "Retrieval confidence is low. "
-            "The search did not find a strong "
-            "textual match for this question."
+            "Semantic retrieval confidence is low. "
+            "The retrieved sections may not strongly "
+            "match the question."
         )
 
     with st.expander(
-        "How RAG worked for this question"
+        "How semantic RAG worked"
     ):
         st.markdown(
             """
-1. The app took your question.
-2. It compared the question with every PDF chunk using TF-IDF.
-3. It ranked the chunks using cosine similarity.
-4. It selected the most relevant chunks.
-5. It sent those chunks to the selected Ollama model.
-6. The model generated an answer using the retrieved context.
+1. The app split the PDF into overlapping chunks.
+2. It converted every chunk into a semantic embedding.
+3. It converted your question into another embedding.
+4. It compared the question vector with all chunk vectors.
+5. It selected the chunks with the highest similarity.
+6. It sent those chunks to the selected Ollama model.
+7. Ollama generated an answer using that context.
             """
         )
 
@@ -592,12 +641,22 @@ if final_question:
         )
 
         st.write(
-            f"Best similarity score: "
+            f"Best semantic similarity score: "
             f"{best_score:.3f}"
         )
 
         st.write(
-            f"Model mode: {MODEL_MODE}"
+            f"Embedding dimensions: "
+            f"{chunk_embeddings.shape[1]}"
+        )
+
+        st.write(
+            f"Embedding model: "
+            f"{EMBEDDING_MODEL_NAME}"
+        )
+
+        st.write(
+            f"Generation mode: {MODEL_MODE}"
         )
 
         st.write(
@@ -615,7 +674,7 @@ if final_question:
                 st.markdown(
                     f"**Chunk {index} — "
                     f"Page {chunk['page']} — "
-                    f"Similarity score: "
+                    f"Semantic score: "
                     f"{chunk['score']:.3f}**"
                 )
 
@@ -635,13 +694,15 @@ if final_question:
 
         except Exception as error:
             st.error(
-                f"The app could not connect "
-                f"using {MODEL_MODE}. "
-                "Check the local Ollama service "
-                "or cloud API credentials."
+                f"The app could not connect using "
+                f"{MODEL_MODE}. Check the local "
+                "Ollama service or cloud credentials."
             )
 
-            st.code(str(error))
+            st.code(
+                f"{type(error).__name__}: {error}"
+            )
+
             st.stop()
 
     if not answer or not answer.strip():

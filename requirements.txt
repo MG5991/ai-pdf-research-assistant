@@ -1,4 +1,4 @@
 streamlit
 pypdf
-ollama
-scikit-learn
+ollama>=0.6.2
+sentence-transformers
