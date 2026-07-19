@@ -319,16 +319,3 @@ Users should avoid uploading confidential, private, or sensitive documents to th
 - Docker support
 - Production-style deployment configuration
 
-## Development Roadmap
-
-- Session 1: Basic PDF upload and AI question answering
-- Session 2: Clean project structure and documentation
-- Session 3: TF-IDF RAG prototype
-- Session 4: GitHub preparation and dependency testing
-- Session 5: GitHub repository setup
-- Session 6: Public Streamlit deployment
-- Session 7: Semantic embedding retrieval
-- Session 8: Persistent vector database
-- Session 9: Multiple PDFs and chat history
-- Session 10: Interface and portfolio polish
-- Session 11: Docker and production-style packaging
