@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.50
 pypdf
 ollama>=0.6.2
 sentence-transformers

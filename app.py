@@ -74,16 +74,74 @@ st.set_page_config(
     page_title="AI PDF Research Assistant",
     page_icon="📄",
     layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        "About": (
+            "AI PDF Research Assistant is a "
+            "multi-document Retrieval-Augmented "
+            "Generation portfolio project."
+        ),
+    },
 )
 
-st.title(
-    "AI PDF Research Assistant — Multi-Document Chat"
-)
 
-st.write(
-    "Upload several PDFs, search them with semantic "
-    "vector retrieval, and ask grounded follow-up "
-    "questions in a chat interface."
+with st.container(
+    border=True,
+):
+    st.title(
+        "AI PDF Research Assistant"
+    )
+
+    st.markdown(
+        "### Multi-document research, grounded in your sources"
+    )
+
+    st.write(
+        "Upload research papers or reports, search "
+        "them using semantic vector retrieval, compare "
+        "documents, and ask contextual follow-up questions."
+    )
+
+    feature_col1, feature_col2, feature_col3 = (
+        st.columns(
+            3,
+            gap="medium",
+        )
+    )
+
+    with feature_col1:
+        st.markdown(
+            "**Semantic retrieval**"
+        )
+
+        st.caption(
+            "Find relevant sections by meaning, "
+            "not only matching keywords."
+        )
+
+    with feature_col2:
+        st.markdown(
+            "**Multi-document analysis**"
+        )
+
+        st.caption(
+            "Search, summarize, and compare up "
+            "to five PDF documents."
+        )
+
+    with feature_col3:
+        st.markdown(
+            "**Grounded answers**"
+        )
+
+        st.caption(
+            "Inspect filenames, page references, "
+            "retrieved chunks, and similarity scores."
+        )
+
+st.caption(
+    "Portfolio demonstration · "
+    "SentenceTransformers · ChromaDB · Ollama"
 )
 
 
@@ -1110,45 +1168,61 @@ def display_message(
         )
 
         if sources:
-            st.caption(
-                "Sources: "
-                + " · ".join(
-                    sources
-                )
-            )
+            with st.expander(
+                    f"Sources used ({len(sources)})",
+                    expanded=False,
+            ):
+                for source in sources:
+                    st.markdown(
+                        f"- `{source}`"
+                    )
 
 
 # -----------------------------
 # 22. Sidebar settings
 # -----------------------------
 
-st.sidebar.header(
-    "RAG Settings"
+st.sidebar.title(
+    "Research Workspace"
 )
 
 st.sidebar.caption(
-    f"Generation mode: "
-    f"{MODEL_MODE}"
+    "Multi-document conversational RAG"
 )
 
-st.sidebar.caption(
-    f"Language model: "
-    f"{ACTIVE_MODEL}"
-)
+with st.sidebar.expander(
+    "System status",
+    expanded=True,
+):
+    st.markdown(
+        f"**Generation mode**  \n"
+        f"{MODEL_MODE}"
+    )
 
-st.sidebar.caption(
-    "Retriever: "
-    "Multi-document Chroma search"
-)
+    st.markdown(
+        f"**Language model**  \n"
+        f"`{ACTIVE_MODEL}`"
+    )
 
-st.sidebar.caption(
-    "Embedding model: "
-    "all-MiniLM-L6-v2"
-)
+    st.markdown(
+        "**Retriever**  \n"
+        "Multi-document Chroma search"
+    )
 
-st.sidebar.caption(
-    f"Vector database: "
-    f"{VECTOR_DB_MODE}"
+    st.markdown(
+        "**Embedding model**  \n"
+        "`all-MiniLM-L6-v2`"
+    )
+
+    st.markdown(
+        f"**Vector database**  \n"
+        f"{VECTOR_DB_MODE}"
+    )
+
+st.sidebar.divider()
+
+st.sidebar.subheader(
+    "Retrieval settings"
 )
 
 top_k = st.sidebar.slider(
@@ -1156,22 +1230,42 @@ top_k = st.sidebar.slider(
     min_value=3,
     max_value=12,
     value=6,
+    help=(
+        "Higher values provide more context but "
+        "may also include less relevant sections."
+    ),
 )
 
-show_chunks = (
-    st.sidebar.checkbox(
-        "Show retrieved chunks",
-        value=False,
-    )
+show_chunks = st.sidebar.checkbox(
+    "Show retrieved text chunks",
+    value=False,
+    help=(
+        "Display the exact PDF sections selected "
+        "by the retrieval system."
+    ),
 )
 
+st.sidebar.divider()
+
+st.sidebar.info(
+    "Public demo: avoid uploading confidential, "
+    "private, or sensitive documents."
+)
 
 # -----------------------------
 # 23. Multiple PDF upload
 # -----------------------------
+st.subheader(
+    "1. Add your research documents"
+)
+
+st.caption(
+    "Upload between one and five text-based PDFs. "
+    "Each file may be up to 20 MB."
+)
 
 uploaded_pdfs = st.file_uploader(
-    "Upload up to five PDF documents",
+    "Choose PDF documents",
     type=["pdf"],
     accept_multiple_files=True,
     help=(
@@ -1207,15 +1301,52 @@ if (
 # 24. Process all PDFs
 # -----------------------------
 
-with st.spinner(
-    "Reading and indexing uploaded PDFs..."
-):
+with st.status(
+    "Preparing your research workspace...",
+    expanded=True,
+) as processing_status:
+    st.write(
+        "Validating file sizes and checking "
+        "for duplicate documents..."
+    )
+
+    st.write(
+        "Extracting readable PDF text and "
+        "creating document chunks..."
+    )
+
+    st.write(
+        "Creating or reusing semantic "
+        "ChromaDB indexes..."
+    )
+
     (
         indexed_documents,
         processing_warnings,
     ) = process_uploaded_pdfs(
         uploaded_pdfs
     )
+
+    if indexed_documents:
+        processing_status.update(
+            label=(
+                f"Workspace ready — "
+                f"{len(indexed_documents)} "
+                "document(s) indexed."
+            ),
+            state="complete",
+            expanded=False,
+        )
+
+    else:
+        processing_status.update(
+            label=(
+                "No uploaded documents "
+                "could be indexed."
+            ),
+            state="error",
+            expanded=True,
+        )
 
 for warning in processing_warnings:
     st.warning(
@@ -1268,33 +1399,80 @@ total_indexed_chunks = sum(
     in indexed_documents
 )
 
-st.success(
-    f"Ready: "
-    f"{len(indexed_documents)} "
-    f"document(s), "
-    f"{total_indexed_chunks} "
-    "indexed chunks."
+total_readable_pages = sum(
+    document["page_count"]
+    for document
+    in indexed_documents
 )
 
+st.success(
+    f"Research workspace ready with "
+    f"{len(indexed_documents)} document(s)."
+)
+
+metric_col1, metric_col2, metric_col3 = (
+    st.columns(
+        3,
+        gap="medium",
+    )
+)
+
+with metric_col1:
+    st.metric(
+        "Documents",
+        len(indexed_documents),
+    )
+
+with metric_col2:
+    st.metric(
+        "Readable pages",
+        total_readable_pages,
+    )
+
+with metric_col3:
+    st.metric(
+        "Indexed chunks",
+        total_indexed_chunks,
+    )
+
 with st.expander(
-    "Uploaded document status",
+    "Document details",
     expanded=True,
 ):
     for document in indexed_documents:
-        if document["index_reused"]:
-            status = "reused"
-        else:
-            status = "created"
+        with st.container(
+            border=True,
+        ):
+            document_col, status_col = (
+                st.columns(
+                    [4, 1],
+                    gap="medium",
+                )
+            )
 
-        st.markdown(
-            f"**{document['filename']}**  \n"
-            f"{document['page_count']} "
-            f"readable page(s) · "
-            f"{document['chunk_count']} "
-            f"chunks · "
-            f"{document['file_size_mb']:.2f} "
-            f"MB · index {status}"
-        )
+            with document_col:
+                st.markdown(
+                    f"**{document['filename']}**"
+                )
+
+                st.caption(
+                    f"{document['page_count']} "
+                    f"readable page(s) · "
+                    f"{document['chunk_count']} "
+                    f"indexed chunks · "
+                    f"{document['file_size_mb']:.2f} MB"
+                )
+
+            with status_col:
+                if document["index_reused"]:
+                    st.success(
+                        "Index reused"
+                    )
+
+                else:
+                    st.info(
+                        "Index created"
+                    )
 
 st.sidebar.metric(
     "Documents",
@@ -1302,10 +1480,14 @@ st.sidebar.metric(
 )
 
 st.sidebar.metric(
+    "Readable pages",
+    total_readable_pages,
+)
+
+st.sidebar.metric(
     "Indexed chunks",
     total_indexed_chunks,
 )
-
 
 # -----------------------------
 # 27. Index and chat controls
@@ -1352,7 +1534,12 @@ if st.sidebar.button(
 # -----------------------------
 
 st.subheader(
-    "Quick actions"
+    "2. Choose a research task"
+)
+
+st.caption(
+    "Use a prepared action or write a custom "
+    "question in the research chat below."
 )
 
 col1, col2, col3 = st.columns(
@@ -1408,7 +1595,12 @@ elif key_points_button:
 # -----------------------------
 
 st.subheader(
-    "Research chat"
+    "3. Research chat"
+)
+
+st.caption(
+    "Ask questions, compare documents, or continue "
+    "with contextual follow-up questions."
 )
 
 for saved_message in (
@@ -1509,11 +1701,10 @@ if final_question:
     ):
         if best_score < 0.15:
             st.warning(
-                "Retrieval confidence is low. "
-                "The selected sections may not "
-                "strongly match the question."
+                "The semantic match for this question "
+                "is relatively weak. Review the retrieved "
+                "sources before relying on the answer."
             )
-
         with st.spinner(
             f"Generating answer with "
             f"{ACTIVE_MODEL}..."
@@ -1565,12 +1756,33 @@ if final_question:
             answer
         )
 
-        st.caption(
-            "Sources: "
-            + " · ".join(
-                source_labels
-            )
+        st.markdown(
+            "**Retrieved sources**"
         )
+
+        source_columns = st.columns(
+            2,
+            gap="small",
+        )
+
+        for source_index, source in enumerate(
+                source_labels
+        ):
+            source_column = source_columns[
+                source_index % 2
+                ]
+
+            with source_column:
+                with st.container(
+                        border=True,
+                ):
+                    st.caption(
+                        "PDF source"
+                    )
+
+                    st.write(
+                        source
+                    )
 
         with st.expander(
             "Retrieval details"
@@ -1628,4 +1840,23 @@ if final_question:
 
     st.session_state.messages.append(
         assistant_message
+    )
+
+st.divider()
+
+footer_col1, footer_col2 = st.columns(
+    [3, 2],
+    gap="medium",
+)
+
+with footer_col1:
+    st.caption(
+        "AI PDF Research Assistant · "
+        "Multi-document conversational RAG"
+    )
+
+with footer_col2:
+    st.caption(
+        "Verify important findings against "
+        "the original documents."
     )

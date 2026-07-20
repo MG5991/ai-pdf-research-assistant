@@ -6,16 +6,44 @@ Try the deployed application:
 
 [Open AI PDF Research Assistant](https://mg5991-ai-pdf-assistant.streamlit.app/)
 
-An AI-powered multi-document research assistant that allows users to upload PDF documents, create semantic vector indexes, retrieve relevant sections, compare documents, and ask grounded follow-up questions through a conversational interface.
+An AI-powered multi-document research assistant that lets users upload PDF documents, create semantic vector indexes, compare sources, and ask grounded follow-up questions through a conversational interface.
 
-The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, ChromaDB vector search, and Ollama for answer generation.
+The application combines Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, ChromaDB vector search, and Ollama-based language models.
+
+## Application Preview
+
+### Multi-Document Research Workspace
+
+![AI PDF Research Assistant interface](assets/app-overview.png)
+
+### Grounded Answers with Document Sources
+
+![Multi-document research answer](assets/multi-document-answer.png)
+
+## Portfolio Highlights
+
+This project demonstrates:
+
+- multi-document Retrieval-Augmented Generation
+- semantic embeddings with SentenceTransformers
+- vector storage and retrieval with ChromaDB
+- persistent local document indexes
+- temporary deployment-safe public indexes
+- PDF hashing and duplicate detection
+- contextual conversational retrieval
+- grounded answers with filename and page references
+- local and cloud LLM integration through Ollama
+- Streamlit deployment and interface design
+- document validation and resource limits
+- chat history using Streamlit Session State
+- professional error handling and processing feedback
 
 ## Features
 
 - Upload up to five PDF documents
 - Process multiple documents in one research session
 - Extract text page by page
-- Split PDF content into overlapping text chunks
+- Split PDF content into overlapping chunks
 - Convert document chunks into semantic embeddings
 - Store embeddings, text, filenames, page numbers, and metadata in ChromaDB
 - Search across all uploaded documents
@@ -23,19 +51,22 @@ The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers 
 - Reuse previously created indexes in local mode
 - Identify PDFs using SHA-256 content hashes
 - Detect and skip duplicate PDF content
-- Limit uploaded file size to 20 MB per PDF
-- Ask custom questions about the uploaded documents
+- Limit uploaded files to 20 MB per PDF
+- Ask custom questions about uploaded documents
 - Ask contextual follow-up questions
 - Keep conversation history during the current session
-- Compare methods, results, and conclusions across documents
-- Summarize each uploaded document
+- Compare methods, findings, and conclusions across documents
+- Summarize uploaded documents
 - Extract important findings and key points
 - Display filename and page references
 - Display semantic similarity scores
-- Inspect retrieved chunks and retrieval details
+- Inspect retrieved text chunks and retrieval details
 - Clear the current conversation
 - Rebuild uploaded document indexes
 - Run with either local Ollama or Ollama Cloud
+- Display document, page, and chunk statistics
+- Provide visible PDF-processing progress
+- Show document and source information in structured interface cards
 
 ## How It Works
 
@@ -74,21 +105,21 @@ Filename and page references
 The application follows a multi-document conversational RAG pipeline:
 
 1. The user uploads one or more PDF documents.
-2. Each file is validated against the file-count and file-size limits.
+2. Each file is checked against the file-count and file-size limits.
 3. A SHA-256 hash is calculated from the contents of each PDF.
-4. Duplicate PDFs are detected using their content hashes.
+4. Duplicate PDF content is detected using the generated hashes.
 5. Each valid PDF is read page by page.
 6. Extracted text is cleaned and divided into overlapping chunks.
 7. Each chunk is converted into a 384-dimensional semantic embedding.
-8. The embeddings, text, filename, page number, document hash, and chunk metadata are stored in ChromaDB.
+8. Embeddings, chunk text, filenames, page numbers, document hashes, and metadata are stored in ChromaDB.
 9. Each PDF uses its own document-specific ChromaDB collection.
-10. The user's question is combined with recent user questions when additional follow-up context is needed.
+10. The user's question is combined with recent user questions when follow-up context is needed.
 11. The retrieval query is converted into a semantic embedding.
 12. ChromaDB searches each uploaded document for relevant chunks.
-13. The strongest result from each document is included before the remaining retrieval positions are filled.
-14. The selected PDF sections and recent conversation are sent to the Ollama language model.
+13. The strongest result from each document is retained before remaining retrieval positions are filled.
+14. The selected PDF sections and recent conversation context are sent to the Ollama language model.
 15. The generated answer is displayed with filename and page references.
-16. The question, answer, and sources remain visible in the current Streamlit session.
+16. Questions, answers, and sources remain visible during the current Streamlit session.
 
 ## Tech Stack
 
@@ -108,7 +139,7 @@ The application follows a multi-document conversational RAG pipeline:
 
 The application automatically supports two generation modes.
 
-### Local Ollama mode
+### Local Ollama Mode
 
 When `OLLAMA_API_KEY` is not configured, the application connects to Ollama running locally:
 
@@ -129,7 +160,7 @@ In local mode:
 - vector indexes are stored locally
 - questions and retrieved context are processed by the local Ollama model
 
-### Ollama Cloud mode
+### Ollama Cloud Mode
 
 When `OLLAMA_API_KEY` is configured, the application connects to Ollama Cloud.
 
@@ -141,11 +172,11 @@ gpt-oss:120b
 
 The API key is stored securely as a Streamlit deployment secret and is not included in the GitHub repository.
 
-In cloud mode, the retrieved PDF sections and the user's question are sent to the configured Ollama Cloud model for answer generation.
+In cloud mode, retrieved PDF sections and user questions are sent to the configured Ollama Cloud model for answer generation.
 
 ## Vector Database Modes
 
-### Persistent local ChromaDB
+### Persistent Local ChromaDB
 
 When the application runs without an Ollama Cloud API key, it uses a persistent ChromaDB database stored in:
 
@@ -153,13 +184,13 @@ When the application runs without an Ollama Cloud API key, it uses a persistent 
 chroma_db/
 ```
 
-Each PDF is identified by its SHA-256 content hash.
+Each PDF is identified using its SHA-256 content hash.
 
-When the same PDF is uploaded again, the application checks whether its ChromaDB collection already contains the expected number of chunks. When the stored index is complete, it is reused instead of regenerating every embedding.
+When the same PDF is uploaded again, the application checks whether its ChromaDB collection already contains the expected number of chunks. When the stored index is complete, it is reused instead of generating the embeddings again.
 
 The `chroma_db/` directory is excluded from Git and must not be committed to the repository.
 
-### Temporary public ChromaDB
+### Temporary Public ChromaDB
 
 When Ollama Cloud mode is active, the application uses an in-memory ChromaDB client.
 
@@ -175,16 +206,16 @@ A hosted vector database would be required for durable public persistence.
 
 ## Multi-Document Retrieval
 
-The application searches every indexed PDF separately.
+The application searches each indexed PDF separately.
 
-For each question:
+For every question:
 
 1. The question is embedded using SentenceTransformers.
 2. Every uploaded document collection is searched.
 3. The highest-ranking result from each document is retained.
 4. Remaining retrieval positions are filled using the strongest results across all documents.
 5. Results are sorted by semantic similarity.
-6. The selected chunks are sent to the language model.
+6. Selected chunks are passed to the language model.
 
 This approach helps prevent one large document from completely dominating the retrieved context.
 
@@ -200,26 +231,57 @@ Which one performed better?
 
 the retrieval query can include recent user questions, helping the system understand what “which one” refers to.
 
-Recent assistant answers are included for conversational understanding, but they are not treated as factual evidence. The uploaded PDF context remains the only factual source.
+Recent assistant answers are included only for conversational understanding. They are not treated as factual evidence. Uploaded PDF context remains the source of factual information.
 
 Conversation history is temporary and belongs only to the current Streamlit session.
 
 ## Source References
 
-Generated answers are instructed to cite important claims using the following format:
+Generated answers are instructed to cite important claims using this format:
 
 ```text
 (filename.pdf, page 4)
 ```
 
-The interface also displays a separate source list containing the filenames and page numbers of the retrieved chunks.
+The interface also displays structured source cards containing the filenames and page numbers of retrieved chunks.
 
-Source references are based on retrieval results and should still be checked against the original PDF when accuracy is critical.
+Previous answers retain their source lists inside expandable sections.
+
+Source references depend on the retrieved text and should still be checked against the original PDF when accuracy is critical.
+
+## User Interface
+
+The interface includes:
+
+- a professional dark theme
+- an introductory product overview
+- semantic retrieval, multi-document analysis, and grounded-answer feature cards
+- numbered workflow sections
+- system and model status information
+- retrieval configuration controls
+- processing-status feedback
+- document, page, and chunk metrics
+- individual document status cards
+- chat-style questions and answers
+- structured source cards
+- expandable retrieval details
+- privacy and verification notices
+
+The Streamlit theme is configured in:
+
+```text
+.streamlit/config.toml
+```
 
 ## Project Structure
 
 ```text
 ai-pdf-research-assistant/
+├── .streamlit/
+│   └── config.toml
+├── assets/
+│   ├── app-overview.png
+│   └── multi-document-answer.png
 ├── app.py
 ├── requirements.txt
 ├── README.md
@@ -267,7 +329,7 @@ The SentenceTransformers embedding model is downloaded automatically the first t
 The current `requirements.txt` contains:
 
 ```text
-streamlit
+streamlit>=1.50
 pypdf
 ollama>=0.6.2
 sentence-transformers
@@ -276,7 +338,7 @@ chromadb
 
 ## Install Ollama for Local Mode
 
-### Linux installation
+### Linux Installation
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
@@ -324,7 +386,7 @@ Open the local URL displayed in the terminal, usually:
 http://localhost:8501
 ```
 
-The sidebar should display:
+The sidebar should display information similar to:
 
 ```text
 Generation mode: Local Ollama
@@ -350,7 +412,7 @@ Then run:
 python -m streamlit run app.py
 ```
 
-The sidebar should display:
+The sidebar should display information similar to:
 
 ```text
 Generation mode: Ollama Cloud
@@ -366,8 +428,8 @@ Do not place the real API key inside:
 - `README.md`
 - `requirements.txt`
 - Git commits
-- public screenshots
-- any committed configuration file
+- screenshots
+- committed configuration files
 
 ## Deployment
 
@@ -391,11 +453,11 @@ The real API key must never be committed to GitHub.
 
 ## Using the Application
 
-### Upload documents
+### Upload Documents
 
 Upload between one and five text-based PDF documents.
 
-Each file must be no larger than:
+Each PDF must be no larger than:
 
 ```text
 20 MB
@@ -403,7 +465,7 @@ Each file must be no larger than:
 
 Duplicate PDF content is automatically detected and skipped.
 
-### Ask a custom question
+### Ask Custom Questions
 
 Examples:
 
@@ -417,7 +479,7 @@ Examples:
 - How do the conclusions differ?
 - Which document provides stronger experimental evidence?
 
-### Ask follow-up questions
+### Ask Follow-Up Questions
 
 Examples:
 
@@ -427,7 +489,7 @@ Examples:
 - Did the other paper use the same approach?
 - What limitations did the authors mention?
 
-### Use quick actions
+### Use Quick Actions
 
 The interface provides three quick actions:
 
@@ -435,12 +497,12 @@ The interface provides three quick actions:
 - **Compare documents**
 - **Extract key points**
 
-### Manage the session
+### Manage the Research Session
 
 The sidebar includes controls to:
 
 - clear the current conversation
-- rebuild all uploaded document indexes
+- rebuild uploaded document indexes
 - adjust the number of retrieved chunks
 - display retrieved text chunks
 - inspect document and index statistics
@@ -479,7 +541,7 @@ The current version uses:
 - SHA-256 document identification
 - duplicate-document detection
 - persistent local index reuse
-- temporary cloud indexes
+- temporary public indexes
 - multi-document result merging
 - follow-up query enrichment
 - retrieval similarity scores
@@ -524,7 +586,7 @@ An index is rebuilt when:
 
 ## File Protection
 
-The application currently applies the following upload rules:
+The application applies the following upload rules:
 
 ```text
 Maximum files per session: 5
@@ -543,7 +605,7 @@ These restrictions help reduce memory usage, processing time, and accidental res
 - It works primarily with text-based PDFs
 - Scanned or image-based PDFs require OCR, which is not currently included
 - Chat history exists only in the current Streamlit session
-- Chat history disappears after the session is closed or reset
+- Chat history disappears when the session is closed or reset
 - Public vector indexes are temporary
 - Local vector indexes persist only on the machine where they were created
 - Follow-up context uses recent conversation turns rather than permanent memory
@@ -552,13 +614,13 @@ These restrictions help reduce memory usage, processing time, and accidental res
 - The local 3B language model may occasionally produce awkward wording
 - Large or complex PDFs may require additional processing time and memory
 - The current retrieval system does not include a cross-encoder reranker
-- The application does not currently provide user accounts or private document libraries
+- The application does not provide user accounts or private document libraries
 - Public users consume the application's Ollama Cloud allowance
 - The public deployment is a portfolio demonstration rather than a high-scale production service
 
 ## Privacy
 
-### Local mode
+### Local Mode
 
 When local Ollama mode is used:
 
@@ -568,7 +630,7 @@ When local Ollama mode is used:
 - vectors are stored in the local `chroma_db/` directory
 - questions and retrieved PDF context are processed by the local Ollama model
 
-### Cloud mode
+### Cloud Mode
 
 When Ollama Cloud mode is used:
 
@@ -581,31 +643,30 @@ Users should not upload confidential, private, legally restricted, or sensitive 
 
 ## Planned Improvements
 
-- Hosted vector database integration
-- Durable public vector-index persistence
-- Automated RAG evaluation
-- Retrieval-quality testing
-- Answer-faithfulness evaluation
-- Unit and integration tests
+- hosted vector database integration
+- durable public vector-index persistence
+- automated RAG evaluation
+- retrieval-quality testing
+- answer-faithfulness evaluation
+- unit and integration tests
 - GitHub Actions CI/CD
-- Cross-encoder reranking
-- Hybrid keyword and semantic retrieval
-- Query rewriting
-- Improved citation verification
+- cross-encoder reranking
+- hybrid keyword and semantic retrieval
+- query rewriting
+- improved citation verification
 - OCR for scanned PDFs
-- Image, chart, and table extraction
-- User authentication
-- Private document libraries
-- Saved conversations
-- Export answers to Markdown or Word
-- Improved interface and mobile layout
-- Usage analytics and monitoring
-- Rate limiting and abuse protection
+- image, chart, and table extraction
+- user authentication
+- private document libraries
+- saved conversations
+- export answers to Markdown or Word
+- usage analytics and monitoring
+- rate limiting and abuse protection
 - Docker support
-- Production-style deployment configuration
+- production-style deployment configuration
 
 ## Disclaimer
 
-AI-generated answers may contain mistakes or incomplete interpretations.
+AI-generated answers may contain mistakes, incomplete interpretations, or incorrect citations.
 
-Users should verify important findings, numerical results, citations, and conclusions against the original uploaded documents.
+Users should verify important findings, numerical results, references, and conclusions against the original uploaded documents.
