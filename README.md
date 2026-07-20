@@ -6,9 +6,9 @@ Try the deployed application:
 
 [Open AI PDF Research Assistant](https://mg5991-ai-pdf-assistant.streamlit.app/)
 
-An AI-powered research assistant that lets users upload a PDF, retrieve relevant sections by semantic meaning, and ask grounded questions about the document.
+An AI-powered research assistant that lets users upload a PDF, create a semantic vector index, retrieve relevant document sections, and ask grounded questions about the document.
 
-The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, and Ollama for answer generation.
+The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, ChromaDB vector search, and Ollama for answer generation.
 
 ## Features
 
@@ -16,7 +16,10 @@ The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers 
 - Extract text page by page
 - Split PDF content into overlapping chunks
 - Convert document chunks into semantic embeddings
-- Retrieve relevant sections by meaning rather than keyword matching
+- Store embeddings, text, page numbers, and metadata in ChromaDB
+- Retrieve relevant sections by semantic meaning
+- Reuse previously created local document indexes
+- Identify PDFs using SHA-256 content hashes
 - Ask custom questions about a PDF
 - Summarize the document
 - Explain the document in simple language
@@ -24,13 +27,17 @@ The application uses Retrieval-Augmented Generation (RAG), SentenceTransformers 
 - Display retrieved source pages
 - Display semantic similarity scores
 - Inspect the retrieved chunks used to generate an answer
+- Rebuild the current PDF index when needed
 - Run with either local Ollama or Ollama Cloud
-- Cache the embedding model and document embeddings for faster reruns
 
 ## How It Works
 
 ```text
 PDF upload
+    ↓
+SHA-256 content hash
+    ↓
+Check for an existing ChromaDB index
     ↓
 Page-by-page text extraction
     ↓
@@ -38,11 +45,13 @@ Overlapping text chunks
     ↓
 SentenceTransformer embeddings
     ↓
+ChromaDB vector index
+    ↓
 Question embedding
     ↓
-Semantic similarity retrieval
+Semantic vector search
     ↓
-Most relevant PDF chunks
+Relevant PDF chunks
     ↓
 Local or cloud Ollama model
     ↓
@@ -51,16 +60,20 @@ Grounded answer with source pages
 
 ## RAG Architecture
 
-The application follows a semantic RAG pipeline:
+The application follows a semantic vector-RAG pipeline:
 
-1. The uploaded PDF is read page by page.
-2. Extracted text is cleaned and divided into overlapping chunks.
-3. Each chunk is converted into a 384-dimensional semantic embedding.
-4. The user's question is converted into an embedding using the same model.
-5. The question embedding is compared with all document embeddings.
-6. The most relevant chunks are selected.
-7. Only the retrieved chunks are sent to the selected Ollama language model.
-8. The generated answer is displayed together with the retrieved source pages.
+1. The uploaded PDF is converted into bytes.
+2. A SHA-256 hash is calculated from the PDF contents.
+3. The hash is used to create a document-specific ChromaDB collection.
+4. The application checks whether a compatible index already exists.
+5. If no reusable index exists, the PDF is read page by page.
+6. Extracted text is cleaned and divided into overlapping chunks.
+7. Each chunk is converted into a 384-dimensional semantic embedding.
+8. The embeddings, chunk text, page numbers, filename, and metadata are stored in ChromaDB.
+9. The user's question is converted into an embedding using the same model.
+10. ChromaDB returns the document chunks with the closest vectors.
+11. Only the retrieved chunks are sent to the selected Ollama language model.
+12. The generated answer is displayed together with the retrieved source pages.
 
 ## Tech Stack
 
@@ -69,6 +82,7 @@ The application follows a semantic RAG pipeline:
 - PyPDF
 - SentenceTransformers
 - `all-MiniLM-L6-v2` embedding model
+- ChromaDB
 - Ollama
 - Llama 3.2 3B for local generation
 - GPT-OSS through Ollama Cloud for deployed generation
@@ -77,7 +91,7 @@ The application follows a semantic RAG pipeline:
 
 ## Model Modes
 
-The application automatically supports two execution modes.
+The application automatically supports two generation modes.
 
 ### Local mode
 
@@ -107,6 +121,36 @@ gpt-oss:120b
 
 The API key is stored securely as a Streamlit deployment secret and is not included in the GitHub repository.
 
+## Vector Database Modes
+
+### Persistent local ChromaDB
+
+When the application runs locally without an Ollama Cloud API key, it uses a persistent ChromaDB database stored in:
+
+```text
+chroma_db/
+```
+
+Each PDF is identified by its SHA-256 content hash.
+
+When the same PDF is uploaded again, the application checks whether its ChromaDB collection already contains the expected number of chunks. If it does, the existing index is reused instead of regenerating every embedding.
+
+The `chroma_db/` folder is excluded from Git and must not be committed to the repository.
+
+### Temporary public ChromaDB
+
+The Streamlit Community Cloud version uses an in-memory ChromaDB client.
+
+Indexes may be reused while the application process remains active, but they are not guaranteed to survive:
+
+- application restarts
+- platform reboots
+- inactivity shutdowns
+- redeployments
+- infrastructure changes
+
+A hosted vector database would be required for durable public persistence.
+
 ## Project Structure
 
 ```text
@@ -114,7 +158,8 @@ ai-pdf-research-assistant/
 ├── app.py
 ├── requirements.txt
 ├── README.md
-└── .gitignore
+├── .gitignore
+└── chroma_db/          # Generated locally and ignored by Git
 ```
 
 ## Local Installation
@@ -197,125 +242,5 @@ The sidebar should display:
 ```text
 Generation mode: Local Ollama
 Language model: llama3.2:3b
-Retriever: Semantic embeddings
-Embedding model: all-MiniLM-L6-v2
-```
-
-## Run with Ollama Cloud
-
-Set the Ollama API key as an environment variable:
-
-```bash
-read -s -p "Paste Ollama API key: " OLLAMA_API_KEY
-export OLLAMA_API_KEY
-echo
-```
-
-Then run:
-
-```bash
-python -m streamlit run app.py
-```
-
-Do not place the real API key inside `app.py`, `README.md`, or any committed file.
-
-## Deployment
-
-The public version is deployed using Streamlit Community Cloud.
-
-Deployment configuration:
-
-```text
-Repository: MG5991/ai-pdf-research-assistant
-Branch: main
-Main file: app.py
-```
-
-The following secret is configured through Streamlit's deployment settings:
-
-```toml
-OLLAMA_API_KEY = "your_private_ollama_api_key"
-```
-
-The real key must never be committed to GitHub.
-
-## Example Questions
-
-- What is the main contribution of this paper?
-- What research gap does this study address?
-- What methodology did the authors use?
-- What are the main findings?
-- What limitations are discussed?
-- Which approach performed best?
-- Explain this paper in simple language.
-- Summarize the methods, results, and conclusions.
-- Extract the most important key points.
-
-## Semantic Retrieval
-
-The current version uses:
-
-- Character-based overlapping chunks
-- SentenceTransformers document embeddings
-- SentenceTransformers query embeddings
-- Normalized 384-dimensional vectors
-- Semantic similarity ranking
-- Adjustable top-k retrieval
-- Source-page metadata
-- Streamlit caching for the model and document embeddings
-
-Unlike keyword-based TF-IDF retrieval, semantic embeddings can connect phrases with similar meanings even when they do not share the same words.
-
-For example:
-
-```text
-Question:
-Which model performed best?
-
-Document:
-Shrinkage-LDA achieved the highest classification accuracy.
-```
-
-Semantic retrieval can recognize that these statements are related.
-
-## Current Limitations
-
-- The application currently processes one PDF at a time
-- It works primarily with text-based PDFs
-- Scanned or image-based PDFs require OCR, which is not yet included
-- The document index is recreated when a new PDF is processed
-- Embeddings are currently stored in application memory rather than a persistent vector database
-- The local 3B language model may occasionally produce awkward wording
-- Source-page references are based on retrieved chunks and should still be checked against the original document
-- Large PDFs may require more processing time and memory
-- Public users consume the application's Ollama Cloud allowance
-- The public deployment is a portfolio demonstration rather than a high-scale production service
-
-## Privacy
-
-### Local mode
-
-When local Ollama is used, PDF context and questions are processed on the user's computer.
-
-### Cloud mode
-
-When Ollama Cloud is used, the retrieved PDF chunks and the user's question are sent to the configured cloud language model to generate an answer.
-
-Users should avoid uploading confidential, private, or sensitive documents to the public demonstration application.
-
-## Planned Improvements
-
-- Persistent vector database integration
-- Reuse previously generated document indexes
-- Multiple PDF support
-- Chat history
-- Follow-up questions
-- Document comparison
-- OCR for scanned PDFs
-- Improved source citations
-- Better interface and mobile layout
-- File-size and page-count limits
-- Usage and abuse protection
-- Docker support
-- Production-style deployment configuration
-
+Retriever: Chroma semantic search
+Embedding model: all-Mini

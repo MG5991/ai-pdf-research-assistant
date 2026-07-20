@@ -1,6 +1,9 @@
+import hashlib
 import os
 import re
+from io import BytesIO
 
+import chromadb
 import streamlit as st
 from ollama import Client
 from pypdf import PdfReader
@@ -17,6 +20,12 @@ CLOUD_MODEL = "gpt-oss:120b"
 EMBEDDING_MODEL_NAME = (
     "sentence-transformers/all-MiniLM-L6-v2"
 )
+
+CHROMA_DIRECTORY = "chroma_db"
+
+# Change this value in the future if the chunking
+# or embedding strategy changes substantially.
+INDEX_VERSION = "v1"
 
 ollama_api_key = os.getenv(
     "OLLAMA_API_KEY",
@@ -36,6 +45,10 @@ if ollama_api_key:
         },
     )
 
+    # Public deployment uses temporary storage.
+    USE_PERSISTENT_CHROMA = False
+    VECTOR_DB_MODE = "Temporary Chroma"
+
 else:
     MODEL_MODE = "Local Ollama"
     ACTIVE_MODEL = LOCAL_MODEL
@@ -43,6 +56,10 @@ else:
     ollama_client = Client(
         host="http://localhost:11434",
     )
+
+    # Local development persists indexes to disk.
+    USE_PERSISTENT_CHROMA = True
+    VECTOR_DB_MODE = "Persistent local Chroma"
 
 
 # -----------------------------
@@ -56,13 +73,14 @@ st.set_page_config(
 )
 
 st.title(
-    "AI PDF Research Assistant — Semantic RAG"
+    "AI PDF Research Assistant — Vector RAG"
 )
 
 st.write(
     "Upload a PDF and ask questions about it. "
-    "The app uses semantic embeddings to retrieve "
-    "relevant sections before generating an answer."
+    "The app stores semantic document vectors in "
+    "ChromaDB and retrieves the most relevant sections "
+    "before generating an answer."
 )
 
 
@@ -73,10 +91,7 @@ st.write(
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
     """
-    Load the SentenceTransformers embedding model.
-
-    Streamlit caches the model so it is not reloaded
-    every time the application reruns.
+    Load and cache the SentenceTransformers model.
     """
 
     return SentenceTransformer(
@@ -85,10 +100,70 @@ def load_embedding_model():
 
 
 # -----------------------------
-# 4. Clean extracted text
+# 4. Create Chroma client
 # -----------------------------
 
-def clean_text(text: str) -> str:
+@st.cache_resource(show_spinner=False)
+def get_chroma_client(
+    use_persistent_storage: bool,
+):
+    """
+    Create and cache the Chroma client.
+
+    Local mode:
+        Persistent database stored in chroma_db/.
+
+    Cloud mode:
+        Temporary in-memory database.
+    """
+
+    if use_persistent_storage:
+        return chromadb.PersistentClient(
+            path=CHROMA_DIRECTORY
+        )
+
+    return chromadb.EphemeralClient()
+
+
+# -----------------------------
+# 5. Calculate PDF hash
+# -----------------------------
+
+def calculate_pdf_hash(
+    pdf_bytes: bytes,
+) -> str:
+    """
+    Generate a unique SHA-256 identifier
+    based on the PDF file contents.
+    """
+
+    return hashlib.sha256(
+        pdf_bytes
+    ).hexdigest()
+
+
+def create_collection_name(
+    document_hash: str,
+) -> str:
+    """
+    Create a valid Chroma collection name.
+
+    The hash identifies the document.
+    The index version identifies the retrieval setup.
+    """
+
+    return (
+        f"pdf_{document_hash[:24]}_{INDEX_VERSION}"
+    )
+
+
+# -----------------------------
+# 6. Clean extracted text
+# -----------------------------
+
+def clean_text(
+    text: str,
+) -> str:
     """
     Remove repeated spaces, tabs, and line breaks.
     """
@@ -103,22 +178,19 @@ def clean_text(text: str) -> str:
 
 
 # -----------------------------
-# 5. Read PDF page by page
+# 7. Read PDF page by page
 # -----------------------------
 
+@st.cache_data(show_spinner=False)
 def read_pdf_with_pages(
-    uploaded_file,
+    pdf_bytes: bytes,
 ) -> list[dict]:
     """
     Extract readable text from each PDF page.
-
-    Each page is stored with:
-    - page number
-    - extracted text
     """
 
     pdf_reader = PdfReader(
-        uploaded_file
+        BytesIO(pdf_bytes)
     )
 
     pages = []
@@ -141,16 +213,20 @@ def read_pdf_with_pages(
 
 
 # -----------------------------
-# 6. Split pages into chunks
+# 8. Split pages into chunks
 # -----------------------------
 
+@st.cache_data(show_spinner=False)
 def split_pages_into_chunks(
-    pages: list[dict],
+    pages_as_tuple: tuple,
     chunk_size: int = 1200,
     overlap: int = 200,
 ) -> list[dict]:
     """
     Split each page into overlapping text chunks.
+
+    A tuple is used as input so Streamlit can cache
+    the result reliably.
     """
 
     if chunk_size <= 0:
@@ -168,8 +244,17 @@ def split_pages_into_chunks(
             "Overlap must be smaller than chunk size."
         )
 
+    pages = [
+        {
+            "page": page_number,
+            "text": page_text,
+        }
+        for page_number, page_text in pages_as_tuple
+    ]
+
     chunks = []
     step = chunk_size - overlap
+    chunk_number = 0
 
     for page in pages:
         page_number = page["page"]
@@ -187,10 +272,13 @@ def split_pages_into_chunks(
             if chunk_text:
                 chunks.append(
                     {
+                        "chunk_number": chunk_number,
                         "page": page_number,
                         "text": chunk_text,
                     }
                 )
+
+                chunk_number += 1
 
             start += step
 
@@ -198,53 +286,178 @@ def split_pages_into_chunks(
 
 
 # -----------------------------
-# 7. Create semantic embeddings
+# 9. Create chunk embeddings
 # -----------------------------
 
-@st.cache_data(show_spinner=False)
 def create_chunk_embeddings(
-    chunk_texts: tuple[str, ...],
+    chunks: list[dict],
 ):
     """
-    Convert document chunks into semantic vectors.
-
-    Streamlit caches the vectors using the tuple of
-    chunk texts as the cache key.
+    Convert all document chunks into normalized
+    semantic vectors.
     """
 
     embedding_model = load_embedding_model()
 
-    embeddings = (
-        embedding_model.encode_document(
-            list(chunk_texts),
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-    )
+    chunk_texts = [
+        chunk["text"]
+        for chunk in chunks
+    ]
 
-    return embeddings
+    return embedding_model.encode_document(
+        chunk_texts,
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    )
 
 
 # -----------------------------
-# 8. Retrieve semantic matches
+# 10. Create or reuse Chroma index
+# -----------------------------
+
+def create_or_reuse_document_index(
+    document_hash: str,
+    filename: str,
+    chunks: list[dict],
+):
+    """
+    Create a Chroma collection for the PDF.
+
+    If the collection already contains the expected
+    number of chunks, reuse it without regenerating
+    embeddings.
+    """
+
+    chroma_client = get_chroma_client(
+        USE_PERSISTENT_CHROMA
+    )
+
+    collection_name = create_collection_name(
+        document_hash
+    )
+
+    collection = (
+        chroma_client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=None,
+            metadata={
+                "document_hash": document_hash,
+                "filename": filename,
+                "embedding_model": (
+                    EMBEDDING_MODEL_NAME
+                ),
+                "index_version": INDEX_VERSION,
+            },
+            configuration={
+                "hnsw": {
+                    "space": "cosine",
+                }
+            },
+        )
+    )
+
+    existing_count = collection.count()
+    expected_count = len(chunks)
+
+    if (
+        existing_count > 0
+        and existing_count == expected_count
+    ):
+        return (
+            collection,
+            collection_name,
+            True,
+        )
+
+    # A partial or incompatible index should not
+    # be reused.
+    if existing_count > 0:
+        chroma_client.delete_collection(
+            name=collection_name
+        )
+
+        collection = chroma_client.create_collection(
+            name=collection_name,
+            embedding_function=None,
+            metadata={
+                "document_hash": document_hash,
+                "filename": filename,
+                "embedding_model": (
+                    EMBEDDING_MODEL_NAME
+                ),
+                "index_version": INDEX_VERSION,
+            },
+            configuration={
+                "hnsw": {
+                    "space": "cosine",
+                }
+            },
+        )
+
+    chunk_embeddings = (
+        create_chunk_embeddings(chunks)
+    )
+
+    chunk_ids = [
+        (
+            f"{document_hash[:12]}_"
+            f"chunk_{chunk['chunk_number']:05d}"
+        )
+        for chunk in chunks
+    ]
+
+    documents = [
+        chunk["text"]
+        for chunk in chunks
+    ]
+
+    metadatas = [
+        {
+            "document_hash": document_hash,
+            "filename": filename,
+            "page": chunk["page"],
+            "chunk_number": (
+                chunk["chunk_number"]
+            ),
+        }
+        for chunk in chunks
+    ]
+
+    collection.add(
+        ids=chunk_ids,
+        embeddings=chunk_embeddings.tolist(),
+        documents=documents,
+        metadatas=metadatas,
+    )
+
+    return (
+        collection,
+        collection_name,
+        False,
+    )
+
+
+# -----------------------------
+# 11. Query Chroma
 # -----------------------------
 
 def retrieve_relevant_chunks(
     question: str,
-    chunks: list[dict],
-    chunk_embeddings,
+    collection,
     top_k: int = 5,
 ) -> list[dict]:
     """
-    Embed the question and compare it with every
-    document-chunk embedding.
-
-    Because the embeddings are normalized, their
-    dot product is equivalent to cosine similarity.
+    Embed the question and query the Chroma
+    collection for the closest document chunks.
     """
 
     if not question.strip():
+        return []
+
+    record_count = collection.count()
+
+    if record_count == 0:
         return []
 
     embedding_model = load_embedding_model()
@@ -258,35 +471,65 @@ def retrieve_relevant_chunks(
         )
     )
 
-    similarities = (
-        chunk_embeddings @ question_embedding
-    )
-
     number_to_retrieve = min(
         top_k,
-        len(chunks),
+        record_count,
     )
 
-    top_indices = similarities.argsort()[
-        -number_to_retrieve:
-    ][::-1]
+    results = collection.query(
+        query_embeddings=[
+            question_embedding.tolist()
+        ],
+        n_results=number_to_retrieve,
+        include=[
+            "documents",
+            "metadatas",
+            "distances",
+        ],
+    )
+
+    documents = (
+        results.get("documents") or [[]]
+    )[0]
+
+    metadatas = (
+        results.get("metadatas") or [[]]
+    )[0]
+
+    distances = (
+        results.get("distances") or [[]]
+    )[0]
 
     retrieved_chunks = []
 
-    for index in top_indices:
-        chunk = chunks[index].copy()
-
-        chunk["score"] = float(
-            similarities[index]
+    for document, metadata, distance in zip(
+        documents,
+        metadatas,
+        distances,
+    ):
+        # For cosine distance:
+        # similarity = 1 - distance
+        similarity_score = (
+            1.0 - float(distance)
         )
 
-        retrieved_chunks.append(chunk)
+        retrieved_chunks.append(
+            {
+                "page": metadata["page"],
+                "chunk_number": (
+                    metadata["chunk_number"]
+                ),
+                "filename": metadata["filename"],
+                "text": document,
+                "score": similarity_score,
+            }
+        )
 
     return retrieved_chunks
 
 
 # -----------------------------
-# 9. Create grounded prompt
+# 12. Create grounded prompt
 # -----------------------------
 
 def create_prompt(
@@ -301,7 +544,8 @@ def create_prompt(
 
     for chunk in retrieved_chunks:
         context_parts.append(
-            f"[Page {chunk['page']}]\n"
+            f"[Document: {chunk['filename']} | "
+            f"Page {chunk['page']}]\n"
             f"{chunk['text']}"
         )
 
@@ -340,7 +584,7 @@ ANSWER:
 
 
 # -----------------------------
-# 10. Ask Ollama
+# 13. Ask Ollama
 # -----------------------------
 
 def ask_ollama_model(
@@ -348,7 +592,7 @@ def ask_ollama_model(
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Generate an answer through either local Ollama
+    Generate an answer using either local Ollama
     or Ollama Cloud.
     """
 
@@ -379,7 +623,7 @@ def ask_ollama_model(
 
 
 # -----------------------------
-# 11. Sidebar settings
+# 14. Sidebar settings
 # -----------------------------
 
 st.sidebar.header("RAG Settings")
@@ -393,11 +637,15 @@ st.sidebar.caption(
 )
 
 st.sidebar.caption(
-    "Retriever: Semantic embeddings"
+    "Retriever: Chroma semantic search"
 )
 
 st.sidebar.caption(
     "Embedding model: all-MiniLM-L6-v2"
+)
+
+st.sidebar.caption(
+    f"Vector database: {VECTOR_DB_MODE}"
 )
 
 top_k = st.sidebar.slider(
@@ -414,7 +662,7 @@ show_chunks = st.sidebar.checkbox(
 
 
 # -----------------------------
-# 12. PDF upload
+# 15. PDF upload
 # -----------------------------
 
 uploaded_pdf = st.file_uploader(
@@ -429,19 +677,25 @@ if uploaded_pdf is None:
 
     st.stop()
 
+pdf_bytes = uploaded_pdf.getvalue()
+
+document_hash = calculate_pdf_hash(
+    pdf_bytes
+)
+
 st.success(
     f"Uploaded: {uploaded_pdf.name}"
 )
 
 
 # -----------------------------
-# 13. Process and index PDF
+# 16. Process PDF and build index
 # -----------------------------
 
 try:
     with st.spinner("Reading PDF..."):
         pages = read_pdf_with_pages(
-            uploaded_pdf
+            pdf_bytes
         )
 
     if not pages:
@@ -452,11 +706,19 @@ try:
 
         st.stop()
 
+    pages_as_tuple = tuple(
+        (
+            page["page"],
+            page["text"],
+        )
+        for page in pages
+    )
+
     with st.spinner(
         "Splitting PDF into chunks..."
     ):
         chunks = split_pages_into_chunks(
-            pages
+            pages_as_tuple
         )
 
     if not chunks:
@@ -467,23 +729,22 @@ try:
 
         st.stop()
 
-    chunk_texts = tuple(
-        chunk["text"]
-        for chunk in chunks
-    )
-
     with st.spinner(
-        "Creating semantic embeddings..."
+        "Loading or creating Chroma index..."
     ):
-        chunk_embeddings = (
-            create_chunk_embeddings(
-                chunk_texts
-            )
+        (
+            collection,
+            collection_name,
+            index_reused,
+        ) = create_or_reuse_document_index(
+            document_hash=document_hash,
+            filename=uploaded_pdf.name,
+            chunks=chunks,
         )
 
 except Exception as error:
     st.error(
-        "The PDF could not be processed."
+        "The PDF could not be processed or indexed."
     )
 
     st.code(
@@ -493,15 +754,47 @@ except Exception as error:
     st.stop()
 
 
-st.info(
-    f"Extracted {len(pages)} readable pages, "
-    f"created {len(chunks)} chunks, and generated "
-    f"{len(chunk_embeddings)} semantic embeddings."
-)
+if index_reused:
+    st.info(
+        f"Reused an existing Chroma index containing "
+        f"{collection.count()} document chunks."
+    )
+
+else:
+    st.info(
+        f"Created a new Chroma index containing "
+        f"{collection.count()} document chunks."
+    )
 
 
 # -----------------------------
-# 14. Quick actions
+# 17. Index controls
+# -----------------------------
+
+st.sidebar.metric(
+    "Indexed chunks",
+    collection.count(),
+)
+
+if st.sidebar.button(
+    "Rebuild current PDF index",
+    use_container_width=True,
+):
+    chroma_client = get_chroma_client(
+        USE_PERSISTENT_CHROMA
+    )
+
+    chroma_client.delete_collection(
+        name=collection_name
+    )
+
+    st.cache_data.clear()
+
+    st.rerun()
+
+
+# -----------------------------
+# 18. Quick actions
 # -----------------------------
 
 st.subheader("Quick actions")
@@ -528,7 +821,7 @@ with col3:
 
 
 # -----------------------------
-# 15. Custom question
+# 19. Custom question
 # -----------------------------
 
 question = st.text_input(
@@ -541,7 +834,7 @@ question = st.text_input(
 
 
 # -----------------------------
-# 16. Decide final question
+# 20. Decide final question
 # -----------------------------
 
 final_question = None
@@ -570,18 +863,17 @@ elif question.strip():
 
 
 # -----------------------------
-# 17. Retrieve context and answer
+# 21. Retrieve context and answer
 # -----------------------------
 
 if final_question:
     with st.spinner(
-        "Searching by semantic meaning..."
+        "Querying the Chroma vector database..."
     ):
         retrieved_chunks = (
             retrieve_relevant_chunks(
                 question=final_question,
-                chunks=chunks,
-                chunk_embeddings=chunk_embeddings,
+                collection=collection,
                 top_k=top_k,
             )
         )
@@ -609,8 +901,8 @@ if final_question:
 
     st.caption(
         f"Using {len(retrieved_chunks)} "
-        f"semantically retrieved chunks from "
-        f"page(s): {source_pages_text}."
+        f"Chroma results from page(s): "
+        f"{source_pages_text}."
     )
 
     if best_score < 0.15:
@@ -621,18 +913,35 @@ if final_question:
         )
 
     with st.expander(
-        "How semantic RAG worked"
+        "How vector RAG worked"
     ):
         st.markdown(
             """
-1. The app split the PDF into overlapping chunks.
-2. It converted every chunk into a semantic embedding.
-3. It converted your question into another embedding.
-4. It compared the question vector with all chunk vectors.
-5. It selected the chunks with the highest similarity.
-6. It sent those chunks to the selected Ollama model.
-7. Ollama generated an answer using that context.
+1. The app calculated a unique hash for the PDF.
+2. It checked whether a Chroma collection already existed.
+3. New PDFs were split into overlapping chunks.
+4. Each chunk was converted into a semantic embedding.
+5. The vectors, text, page numbers, and metadata were stored in Chroma.
+6. The question was converted into an embedding.
+7. Chroma returned the nearest document vectors.
+8. The retrieved chunks were sent to Ollama.
+9. Ollama generated an answer using the retrieved context.
             """
+        )
+
+        st.write(
+            f"Document hash: "
+            f"{document_hash[:16]}..."
+        )
+
+        st.write(
+            f"Collection name: "
+            f"{collection_name}"
+        )
+
+        st.write(
+            f"Index reused: "
+            f"{index_reused}"
         )
 
         st.write(
@@ -641,13 +950,18 @@ if final_question:
         )
 
         st.write(
-            f"Best semantic similarity score: "
+            f"Best similarity score: "
             f"{best_score:.3f}"
         )
 
         st.write(
-            f"Embedding dimensions: "
-            f"{chunk_embeddings.shape[1]}"
+            f"Stored chunks: "
+            f"{collection.count()}"
+        )
+
+        st.write(
+            f"Vector database mode: "
+            f"{VECTOR_DB_MODE}"
         )
 
         st.write(
@@ -656,11 +970,13 @@ if final_question:
         )
 
         st.write(
-            f"Generation mode: {MODEL_MODE}"
+            f"Generation mode: "
+            f"{MODEL_MODE}"
         )
 
         st.write(
-            f"Language model: {ACTIVE_MODEL}"
+            f"Language model: "
+            f"{ACTIVE_MODEL}"
         )
 
     if show_chunks:
@@ -674,7 +990,7 @@ if final_question:
                 st.markdown(
                     f"**Chunk {index} — "
                     f"Page {chunk['page']} — "
-                    f"Semantic score: "
+                    f"Similarity: "
                     f"{chunk['score']:.3f}**"
                 )
 

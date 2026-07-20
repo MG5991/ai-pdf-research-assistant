@@ -28,3 +28,4 @@ Thumbs.db
 *.pdf
 uploads/
 chroma_db/
+.chroma/

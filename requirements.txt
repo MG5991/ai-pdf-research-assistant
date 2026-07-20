@@ -2,3 +2,4 @@ streamlit
 pypdf
 ollama>=0.6.2
 sentence-transformers
+chromadb
