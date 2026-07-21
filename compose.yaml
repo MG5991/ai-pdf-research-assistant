@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+    image: ai-pdf-research-assistant:latest
+
+    ports:
+      - "127.0.0.1:8501:8501"
+
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      CHROMA_DIRECTORY: /app/chroma_db
+      CHROMA_PERSISTENT: "true"
+      HF_HOME: /home/appuser/.cache/huggingface
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      - chroma_data:/app/chroma_db
+      - model_cache:/home/appuser/.cache/huggingface
+
+    restart: unless-stopped
+
+
+volumes:
+  chroma_data:
+  model_cache:

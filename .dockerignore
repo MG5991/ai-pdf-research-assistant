@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local databases and generated data
+chroma_db/
+.chroma/
+
+# Secrets
+.env
+.env.*
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# Git and IDE files
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/

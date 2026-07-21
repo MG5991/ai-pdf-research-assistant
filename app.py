@@ -21,7 +21,31 @@ EMBEDDING_MODEL_NAME = (
     "sentence-transformers/all-MiniLM-L6-v2"
 )
 
-CHROMA_DIRECTORY = "chroma_db"
+CHROMA_DIRECTORY = (
+    os.getenv(
+        "CHROMA_DIRECTORY",
+        "chroma_db",
+    ).strip()
+    or "chroma_db"
+)
+
+OLLAMA_HOST = (
+    os.getenv(
+        "OLLAMA_HOST",
+        "http://localhost:11434",
+    ).strip()
+    or "http://localhost:11434"
+)
+
+CHROMA_PERSISTENT_SETTING = (
+    os.getenv(
+        "CHROMA_PERSISTENT",
+        "",
+    )
+    .strip()
+    .lower()
+)
+
 INDEX_VERSION = "v1"
 
 MAX_PDF_FILES = 5
@@ -51,19 +75,51 @@ if ollama_api_key:
         },
     )
 
-    USE_PERSISTENT_CHROMA = False
-    VECTOR_DB_MODE = "Temporary Chroma"
-
 else:
     MODEL_MODE = "Local Ollama"
     ACTIVE_MODEL = LOCAL_MODEL
 
     ollama_client = Client(
-        host="http://localhost:11434"
+        host=OLLAMA_HOST
     )
 
+
+# Allow Docker or another deployment environment
+# to explicitly control Chroma persistence.
+if CHROMA_PERSISTENT_SETTING in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
     USE_PERSISTENT_CHROMA = True
-    VECTOR_DB_MODE = "Persistent local Chroma"
+
+elif CHROMA_PERSISTENT_SETTING in {
+    "0",
+    "false",
+    "no",
+    "off",
+}:
+    USE_PERSISTENT_CHROMA = False
+
+else:
+    # Preserve the original behavior:
+    # local Ollama uses persistent Chroma,
+    # while Streamlit Cloud uses temporary Chroma.
+    USE_PERSISTENT_CHROMA = (
+        not bool(ollama_api_key)
+    )
+
+
+if USE_PERSISTENT_CHROMA:
+    VECTOR_DB_MODE = (
+        "Persistent Chroma"
+    )
+
+else:
+    VECTOR_DB_MODE = (
+        "Temporary Chroma"
+    )
 
 
 # -----------------------------

@@ -2,13 +2,11 @@
 
 ## Live Demo
 
-Try the deployed application:
+[Open the AI PDF Research Assistant](https://mg5991-ai-pdf-assistant.streamlit.app/)
 
-[Open AI PDF Research Assistant](https://mg5991-ai-pdf-assistant.streamlit.app/)
+An AI-powered, multi-document research assistant that lets users upload PDF documents, create semantic vector indexes, compare sources, and ask grounded follow-up questions through a conversational interface.
 
-An AI-powered multi-document research assistant that lets users upload PDF documents, create semantic vector indexes, compare sources, and ask grounded follow-up questions through a conversational interface.
-
-The application combines Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, ChromaDB vector search, and Ollama-based language models.
+The application combines Retrieval-Augmented Generation (RAG), SentenceTransformers embeddings, ChromaDB vector search, Streamlit, and Ollama-based language models.
 
 ## Application Preview
 
@@ -34,9 +32,12 @@ This project demonstrates:
 - grounded answers with filename and page references
 - local and cloud LLM integration through Ollama
 - Streamlit deployment and interface design
-- document validation and resource limits
-- chat history using Streamlit Session State
-- professional error handling and processing feedback
+- Docker and Docker Compose packaging
+- persistent Docker volumes
+- container health checks
+- non-root container execution
+- environment-based configuration
+- secure secrets handling
 
 ## Features
 
@@ -48,10 +49,11 @@ This project demonstrates:
 - Store embeddings, text, filenames, page numbers, and metadata in ChromaDB
 - Search across all uploaded documents
 - Retrieve relevant sections by semantic meaning
-- Reuse previously created indexes in local mode
+- Reuse previously created document indexes in local mode
+- Reuse persistent indexes inside Docker
 - Identify PDFs using SHA-256 content hashes
 - Detect and skip duplicate PDF content
-- Limit uploaded files to 20 MB per PDF
+- Limit each uploaded PDF to 20 MB
 - Ask custom questions about uploaded documents
 - Ask contextual follow-up questions
 - Keep conversation history during the current session
@@ -63,10 +65,11 @@ This project demonstrates:
 - Inspect retrieved text chunks and retrieval details
 - Clear the current conversation
 - Rebuild uploaded document indexes
-- Run with either local Ollama or Ollama Cloud
-- Display document, page, and chunk statistics
-- Provide visible PDF-processing progress
-- Show document and source information in structured interface cards
+- Run with local Ollama or Ollama Cloud
+- Run locally with Python
+- Run as a Docker container
+- Persist ChromaDB indexes through Docker volumes
+- Display application health through a container health check
 
 ## How It Works
 
@@ -123,16 +126,19 @@ The application follows a multi-document conversational RAG pipeline:
 
 ## Tech Stack
 
-- Python
+- Python 3.11
 - Streamlit
 - PyPDF
 - SentenceTransformers
-- `all-MiniLM-L6-v2` embedding model
+- `all-MiniLM-L6-v2`
 - ChromaDB
 - Ollama
-- Llama 3.2 3B for local generation
-- GPT-OSS through Ollama Cloud for deployed generation
-- Git and GitHub
+- Llama 3.2 3B
+- GPT-OSS through Ollama Cloud
+- Docker
+- Docker Compose
+- Git
+- GitHub
 - Streamlit Community Cloud
 
 ## Generation Modes
@@ -141,10 +147,18 @@ The application automatically supports two generation modes.
 
 ### Local Ollama Mode
 
-When `OLLAMA_API_KEY` is not configured, the application connects to Ollama running locally:
+When `OLLAMA_API_KEY` is not configured, the application connects to a local Ollama server.
+
+Default local endpoint outside Docker:
 
 ```text
 http://localhost:11434
+```
+
+Default endpoint from inside Docker:
+
+```text
+http://host.docker.internal:11434
 ```
 
 The local language model is:
@@ -170,7 +184,7 @@ The deployed Streamlit version uses:
 gpt-oss:120b
 ```
 
-The API key is stored securely as a Streamlit deployment secret and is not included in the GitHub repository.
+The API key is provided through environment variables or Streamlit deployment secrets and is not stored in the repository.
 
 In cloud mode, retrieved PDF sections and user questions are sent to the configured Ollama Cloud model for answer generation.
 
@@ -178,7 +192,7 @@ In cloud mode, retrieved PDF sections and user questions are sent to the configu
 
 ### Persistent Local ChromaDB
 
-When the application runs without an Ollama Cloud API key, it uses a persistent ChromaDB database stored in:
+When the application runs locally, it can use a persistent ChromaDB database stored in:
 
 ```text
 chroma_db/
@@ -188,13 +202,30 @@ Each PDF is identified using its SHA-256 content hash.
 
 When the same PDF is uploaded again, the application checks whether its ChromaDB collection already contains the expected number of chunks. When the stored index is complete, it is reused instead of generating the embeddings again.
 
-The `chroma_db/` directory is excluded from Git and must not be committed to the repository.
+The `chroma_db/` directory is excluded from Git.
+
+### Persistent Docker ChromaDB
+
+The Docker Compose setup mounts a named volume at:
+
+```text
+/app/chroma_db
+```
+
+This allows document indexes to survive:
+
+- container restarts
+- application restarts
+- container recreation
+- Docker image rebuilds
+
+The stored indexes remain available until the Docker volume is explicitly deleted.
 
 ### Temporary Public ChromaDB
 
-When Ollama Cloud mode is active, the application uses an in-memory ChromaDB client.
+The Streamlit Community Cloud deployment uses temporary ChromaDB storage.
 
-Public vector indexes may be reused while the Streamlit process remains active, but they are not guaranteed to survive:
+Public indexes may be reused while the Streamlit process remains active, but they are not guaranteed to survive:
 
 - application restarts
 - inactivity shutdowns
@@ -231,7 +262,7 @@ Which one performed better?
 
 the retrieval query can include recent user questions, helping the system understand what “which one” refers to.
 
-Recent assistant answers are included only for conversational understanding. They are not treated as factual evidence. Uploaded PDF context remains the source of factual information.
+Recent assistant answers are included only for conversational understanding. They are not treated as factual evidence. Uploaded PDF context remains the factual source.
 
 Conversation history is temporary and belongs only to the current Streamlit session.
 
@@ -243,23 +274,23 @@ Generated answers are instructed to cite important claims using this format:
 (filename.pdf, page 4)
 ```
 
-The interface also displays structured source cards containing the filenames and page numbers of retrieved chunks.
+The interface displays structured source cards containing filenames and page numbers from retrieved chunks.
 
 Previous answers retain their source lists inside expandable sections.
 
-Source references depend on the retrieved text and should still be checked against the original PDF when accuracy is critical.
+Source references depend on the quality of extracted PDF text and retrieved chunks. Important information should still be checked against the original documents.
 
 ## User Interface
 
 The interface includes:
 
 - a professional dark theme
-- an introductory product overview
-- semantic retrieval, multi-document analysis, and grounded-answer feature cards
+- a product overview section
+- feature summary cards
 - numbered workflow sections
 - system and model status information
 - retrieval configuration controls
-- processing-status feedback
+- PDF-processing feedback
 - document, page, and chunk metrics
 - individual document status cards
 - chat-style questions and answers
@@ -285,6 +316,10 @@ ai-pdf-research-assistant/
 ├── app.py
 ├── requirements.txt
 ├── README.md
+├── Dockerfile
+├── compose.yaml
+├── .dockerignore
+├── .env.example
 ├── .gitignore
 └── chroma_db/          # Generated locally and ignored by Git
 ```
@@ -338,7 +373,7 @@ chromadb
 
 ## Install Ollama for Local Mode
 
-### Linux Installation
+Install Ollama on Linux:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
@@ -380,7 +415,7 @@ llama3.2:3b
 python -m streamlit run app.py
 ```
 
-Open the local URL displayed in the terminal, usually:
+Open:
 
 ```text
 http://localhost:8501
@@ -393,15 +428,15 @@ Generation mode: Local Ollama
 Language model: llama3.2:3b
 Retriever: Multi-document Chroma search
 Embedding model: all-MiniLM-L6-v2
-Vector database: Persistent local Chroma
+Vector database: Persistent Chroma
 ```
 
-## Run with Ollama Cloud
+## Run Locally with Ollama Cloud
 
-Set the Ollama API key as an environment variable:
+Load the API key into the current terminal without saving it in the repository:
 
 ```bash
-read -s -p "Paste Ollama API key: " OLLAMA_API_KEY
+read -s -p "Ollama Cloud API key: " OLLAMA_API_KEY
 export OLLAMA_API_KEY
 echo
 ```
@@ -412,24 +447,294 @@ Then run:
 python -m streamlit run app.py
 ```
 
-The sidebar should display information similar to:
-
-```text
-Generation mode: Ollama Cloud
-Language model: gpt-oss:120b
-Retriever: Multi-document Chroma search
-Embedding model: all-MiniLM-L6-v2
-Vector database: Temporary Chroma
-```
-
 Do not place the real API key inside:
 
 - `app.py`
 - `README.md`
+- `.env.example`
 - `requirements.txt`
-- Git commits
 - screenshots
+- Git commits
 - committed configuration files
+
+## Docker
+
+The application includes production-style Docker packaging with:
+
+- a Python 3.11 slim base image
+- a non-root application user
+- a Streamlit health check
+- persistent ChromaDB storage
+- persistent SentenceTransformers model caching
+- local and cloud Ollama support
+- Docker Compose orchestration
+- localhost-only port binding
+- excluded secrets, virtual environments, and generated files
+
+## Docker Files
+
+```text
+Dockerfile
+compose.yaml
+.dockerignore
+.env.example
+```
+
+## Build the Docker Image
+
+```bash
+docker compose build
+```
+
+Confirm the image was created:
+
+```bash
+docker images | grep ai-pdf-research-assistant
+```
+
+## Run Docker with Local Ollama
+
+Make sure Ollama is running on the Ubuntu host:
+
+```bash
+sudo systemctl start ollama
+ollama list
+```
+
+The Docker container connects to the host Ollama service through:
+
+```text
+http://host.docker.internal:11434
+```
+
+On Linux, Ollama must listen on an address that is reachable from the Docker network.
+
+Create a systemd override:
+
+```bash
+sudo systemctl edit ollama
+```
+
+Add:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+```
+
+Then restart Ollama:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Confirm that Ollama is listening:
+
+```bash
+sudo ss -ltnp | grep 11434
+```
+
+Start the application container:
+
+```bash
+unset OLLAMA_API_KEY
+docker compose up -d
+```
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+The application port is bound to localhost only:
+
+```text
+127.0.0.1:8501
+```
+
+Do not expose Ollama port `11434` publicly.
+
+## Run Docker with Ollama Cloud
+
+Load the API key into the current terminal:
+
+```bash
+read -s -p "Ollama Cloud API key: " OLLAMA_API_KEY
+export OLLAMA_API_KEY
+echo
+```
+
+Start or recreate the container:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+Confirm that the variable is available inside the container without displaying its value:
+
+```bash
+docker compose exec app python -c "import os; print('API key available:', bool(os.getenv('OLLAMA_API_KEY')))"
+```
+
+Expected:
+
+```text
+API key available: True
+```
+
+## Check Docker Status
+
+```bash
+docker compose ps
+```
+
+Immediately after startup, the container may show:
+
+```text
+health: starting
+```
+
+Wait until Streamlit has finished loading:
+
+```bash
+sleep 20
+docker compose ps
+```
+
+The container should eventually show:
+
+```text
+healthy
+```
+
+## Check the Streamlit Health Endpoint
+
+```bash
+curl \
+  --retry 10 \
+  --retry-all-errors \
+  --retry-delay 3 \
+  http://localhost:8501/_stcore/health
+```
+
+Expected response:
+
+```text
+ok
+```
+
+## View Docker Logs
+
+```bash
+docker compose logs -f app
+```
+
+Press `Ctrl+C` to stop viewing logs. The container will continue running.
+
+To view only recent logs:
+
+```bash
+docker compose logs --tail=100 app
+```
+
+## Test Local Ollama Connectivity from Docker
+
+```bash
+docker compose exec -T app python - <<'PY'
+import json
+import urllib.request
+
+url = "http://host.docker.internal:11434/api/tags"
+
+with urllib.request.urlopen(url, timeout=10) as response:
+    data = json.load(response)
+
+models = [
+    model.get("name")
+    for model in data.get("models", [])
+]
+
+print("Container connected to Ollama.")
+print("Available models:", models)
+PY
+```
+
+Expected output should include:
+
+```text
+Container connected to Ollama.
+Available models: ['llama3.2:3b', ...]
+```
+
+## Persistent Docker Storage
+
+Docker Compose creates named volumes for:
+
+```text
+ChromaDB vector indexes
+SentenceTransformers model cache
+```
+
+This allows indexes and downloaded embedding models to survive container restarts.
+
+Restart the application:
+
+```bash
+docker compose restart app
+```
+
+After restarting, uploading the same PDF should show:
+
+```text
+Index reused
+```
+
+List the volumes:
+
+```bash
+docker volume ls | grep -E "chroma|model"
+```
+
+## Stop Docker Safely
+
+Stop the application without deleting stored data:
+
+```bash
+docker compose down
+```
+
+The named volumes remain available.
+
+To intentionally delete the stored indexes and model cache:
+
+```bash
+docker compose down -v
+```
+
+Use `-v` only when the stored Docker data should be permanently removed.
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `OLLAMA_API_KEY` | Enables Ollama Cloud mode | Empty |
+| `OLLAMA_HOST` | Ollama endpoint used by the application | `http://localhost:11434` outside Docker |
+| `CHROMA_DIRECTORY` | ChromaDB storage path | `chroma_db` outside Docker |
+| `CHROMA_PERSISTENT` | Enables persistent ChromaDB storage | Automatically selected outside Docker |
+| `HF_HOME` | Hugging Face model-cache directory | Environment dependent |
+
+The Docker Compose configuration uses:
+
+```text
+OLLAMA_HOST=http://host.docker.internal:11434
+CHROMA_DIRECTORY=/app/chroma_db
+CHROMA_PERSISTENT=true
+HF_HOME=/home/appuser/.cache/huggingface
+```
+
+Never commit real API keys, `.env` files, Streamlit secrets, or generated database contents.
 
 ## Deployment
 
@@ -463,7 +768,7 @@ Each PDF must be no larger than:
 20 MB
 ```
 
-Duplicate PDF content is automatically detected and skipped.
+Duplicate PDF content is detected and skipped.
 
 ### Ask Custom Questions
 
@@ -541,6 +846,7 @@ The current version uses:
 - SHA-256 document identification
 - duplicate-document detection
 - persistent local index reuse
+- persistent Docker index reuse
 - temporary public indexes
 - multi-document result merging
 - follow-up query enrichment
@@ -563,7 +869,7 @@ Semantic vector retrieval can recognize that these statements are related.
 
 ## Index Reuse
 
-Each local ChromaDB collection name is generated using:
+Each ChromaDB collection name is generated using:
 
 ```text
 PDF content hash + index version
@@ -598,22 +904,46 @@ Scanned PDFs without extractable text: skipped
 
 These restrictions help reduce memory usage, processing time, and accidental resource abuse.
 
+## Security
+
+The repository is configured to exclude:
+
+- `.env` files
+- Streamlit secrets
+- API keys
+- private key files
+- local ChromaDB data
+- Python virtual environments
+- Git metadata from Docker builds
+- IDE configuration files
+- temporary files and logs
+
+The Docker container runs as a non-root user.
+
+The Streamlit port is published only to:
+
+```text
+127.0.0.1:8501
+```
+
+Real API keys should be passed through the current shell, deployment secrets, or a dedicated secrets-management system.
+
 ## Current Limitations
 
 - The application supports a maximum of five PDFs per session
 - Each PDF is limited to 20 MB
 - It works primarily with text-based PDFs
-- Scanned or image-based PDFs require OCR, which is not currently included
+- Scanned or image-based PDFs require OCR
 - Chat history exists only in the current Streamlit session
 - Chat history disappears when the session is closed or reset
 - Public vector indexes are temporary
-- Local vector indexes persist only on the machine where they were created
+- Local indexes remain only on the machine where they were created
 - Follow-up context uses recent conversation turns rather than permanent memory
 - Retrieval searches document text but does not directly analyze images, charts, or diagrams
 - Source references depend on the quality of extracted text and retrieved chunks
 - The local 3B language model may occasionally produce awkward wording
 - Large or complex PDFs may require additional processing time and memory
-- The current retrieval system does not include a cross-encoder reranker
+- The retrieval system does not include a cross-encoder reranker
 - The application does not provide user accounts or private document libraries
 - Public users consume the application's Ollama Cloud allowance
 - The public deployment is a portfolio demonstration rather than a high-scale production service
@@ -627,8 +957,17 @@ When local Ollama mode is used:
 - PDFs are processed on the user's computer
 - text extraction happens locally
 - embeddings are generated locally
-- vectors are stored in the local `chroma_db/` directory
+- vectors are stored locally
 - questions and retrieved PDF context are processed by the local Ollama model
+
+### Docker Local Mode
+
+When Docker is used with local Ollama:
+
+- the application runs inside the container
+- PDF extraction and embedding generation happen inside the container
+- vector indexes are stored in a Docker volume
+- language-model generation is handled by Ollama running on the host machine
 
 ### Cloud Mode
 
@@ -636,7 +975,7 @@ When Ollama Cloud mode is used:
 
 - PDF extraction and embedding generation happen inside the running application
 - retrieved PDF chunks and user questions are sent to the configured Ollama Cloud model
-- vector indexes are temporary
+- public vector indexes are temporary
 - chat history is stored only in the current Streamlit session
 
 Users should not upload confidential, private, legally restricted, or sensitive documents to the public demonstration application.
@@ -662,8 +1001,6 @@ Users should not upload confidential, private, legally restricted, or sensitive 
 - export answers to Markdown or Word
 - usage analytics and monitoring
 - rate limiting and abuse protection
-- Docker support
-- production-style deployment configuration
 
 ## Disclaimer
 
